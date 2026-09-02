@@ -1,46 +1,49 @@
 {
-  "name": "tree-sitter-python",
-  "version": "0.25.0",
-  "description": "Python grammar for tree-sitter",
-  "repository": "https://github.com/tree-sitter/tree-sitter-python",
-  "license": "MIT",
-  "author": {
-    "name": "Max Brunsfeld",
-    "email": "maxbrunsfeld@gmail.com"
-  },
-  "contributors": [
-    {
-      "name": "Amaan Qureshi",
-      "email": "amaanq12@gmail.com"
-    }
-  ],
+  "name": "@lumine-code/tree-sitter-ipython",
+  "author": "lumine-code",
+  "version": "1.0.0",
+  "description": "Parses IPython source files with Tree-sitter.",
   "main": "bindings/node",
   "types": "bindings/node",
+  "repository": "https://github.com/lumine-code/tree-sitter-ipython",
+  "bugs": "https://github.com/lumine-code/tree-sitter-ipython/issues",
+  "homepage": "https://github.com/lumine-code/tree-sitter-ipython",
+  "license": "MIT",
+  "publishConfig": {
+    "access": "public"
+  },
+  "engines": {
+    "node": ">=24"
+  },
+  "packageManager": "npm@11.16.0",
   "keywords": [
-    "incremental",
-    "parsing",
     "tree-sitter",
-    "python"
+    "ipython",
+    "python",
+    "jupyter",
+    "parser",
+    "lumine"
   ],
   "files": [
+    "bindings/node",
     "grammar.js",
+    "queries",
+    "src",
     "tree-sitter.json",
-    "binding.gyp",
-    "prebuilds/**",
-    "bindings/node/*",
-    "queries/*",
-    "src/**",
-    "*.wasm"
+    "binding.gyp"
   ],
   "dependencies": {
-    "node-addon-api": "^8.5.0",
+    "node-addon-api": "^8.9.2",
     "node-gyp-build": "^4.8.4"
   },
   "devDependencies": {
-    "eslint": "^9.35.0",
-    "eslint-config-treesitter": "^1.0.2",
-    "prebuildify": "^6.0.1",
-    "tree-sitter-cli": "^0.25.9"
+    "@eslint/js": "^10.0.1",
+    "eslint": "^10.9.1",
+    "eslint-config-prettier": "^10.1.8",
+    "globals": "^17.11.0",
+    "prettier": "^3.9.6",
+    "tree-sitter": "^0.25.0",
+    "tree-sitter-cli": "0.26.13"
   },
   "peerDependencies": {
     "tree-sitter": "^0.25.0"
@@ -51,10 +54,15 @@
     }
   },
   "scripts": {
+    "build": "npm run generate && npm run build:native",
+    "build:native": "node-gyp rebuild",
+    "build:wasm": "tree-sitter build --wasm",
+    "check:format": "prettier --check .",
+    "check:generated": "node scripts/check-generated.js",
+    "format": "prettier --write .",
+    "generate": "tree-sitter generate",
     "install": "node-gyp-build",
-    "lint": "eslint grammar.js",
-    "prestart": "tree-sitter build --wasm",
-    "start": "tree-sitter playground",
-    "test": "node --test bindings/node/*_test.js"
+    "lint": "eslint .",
+    "test": "npm run lint && npm run check:format && npm run check:generated && npm run build:native && node --test bindings/node/binding_test.js && tree-sitter test"
   }
 }

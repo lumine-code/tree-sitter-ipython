@@ -1,6 +1,6 @@
 {
   "$schema": "https://tree-sitter.github.io/tree-sitter/assets/schemas/grammar.schema.json",
-  "name": "python",
+  "name": "ipython",
   "word": "identifier",
   "rules": {
     "module": {
@@ -135,8 +135,231 @@
         {
           "type": "SYMBOL",
           "name": "type_alias_statement"
+        },
+        {
+          "type": "SYMBOL",
+          "name": "cell_marker"
+        },
+        {
+          "type": "SYMBOL",
+          "name": "magic_statement"
+        },
+        {
+          "type": "SYMBOL",
+          "name": "shell_statement"
+        },
+        {
+          "type": "SYMBOL",
+          "name": "help_statement"
         }
       ]
+    },
+    "cell_marker": {
+      "type": "SEQ",
+      "members": [
+        {
+          "type": "FIELD",
+          "name": "marker",
+          "content": {
+            "type": "SYMBOL",
+            "name": "cell_marker_marker"
+          }
+        },
+        {
+          "type": "CHOICE",
+          "members": [
+            {
+              "type": "IMMEDIATE_TOKEN",
+              "content": {
+                "type": "PATTERN",
+                "value": "[ \\t]+"
+              }
+            },
+            {
+              "type": "BLANK"
+            }
+          ]
+        },
+        {
+          "type": "CHOICE",
+          "members": [
+            {
+              "type": "CHOICE",
+              "members": [
+                {
+                  "type": "SEQ",
+                  "members": [
+                    {
+                      "type": "FIELD",
+                      "name": "metadata",
+                      "content": {
+                        "type": "SYMBOL",
+                        "name": "cell_marker_metadata"
+                      }
+                    },
+                    {
+                      "type": "CHOICE",
+                      "members": [
+                        {
+                          "type": "SEQ",
+                          "members": [
+                            {
+                              "type": "IMMEDIATE_TOKEN",
+                              "content": {
+                                "type": "PATTERN",
+                                "value": "[ \\t]+"
+                              }
+                            },
+                            {
+                              "type": "FIELD",
+                              "name": "name",
+                              "content": {
+                                "type": "SYMBOL",
+                                "name": "cell_marker_name"
+                              }
+                            }
+                          ]
+                        },
+                        {
+                          "type": "BLANK"
+                        }
+                      ]
+                    }
+                  ]
+                },
+                {
+                  "type": "FIELD",
+                  "name": "name",
+                  "content": {
+                    "type": "SYMBOL",
+                    "name": "cell_marker_name"
+                  }
+                }
+              ]
+            },
+            {
+              "type": "BLANK"
+            }
+          ]
+        }
+      ]
+    },
+    "cell_marker_marker": {
+      "type": "TOKEN",
+      "content": {
+        "type": "PREC",
+        "value": 1,
+        "content": {
+          "type": "SEQ",
+          "members": [
+            {
+              "type": "STRING",
+              "value": "#"
+            },
+            {
+              "type": "PATTERN",
+              "value": "[ \\t]*"
+            },
+            {
+              "type": "PATTERN",
+              "value": "%%+"
+            }
+          ]
+        }
+      }
+    },
+    "cell_marker_metadata": {
+      "type": "IMMEDIATE_TOKEN",
+      "content": {
+        "type": "PREC",
+        "value": 1,
+        "content": {
+          "type": "PATTERN",
+          "value": "\\[(?:md|markdown)\\]"
+        }
+      }
+    },
+    "cell_marker_name": {
+      "type": "IMMEDIATE_TOKEN",
+      "content": {
+        "type": "PATTERN",
+        "value": "[^\\s\\r\\n](?:[^\\r\\n]*[^\\s\\r\\n])?"
+      }
+    },
+    "magic_statement": {
+      "type": "TOKEN",
+      "content": {
+        "type": "SEQ",
+        "members": [
+          {
+            "type": "CHOICE",
+            "members": [
+              {
+                "type": "STRING",
+                "value": "%%"
+              },
+              {
+                "type": "STRING",
+                "value": "%"
+              }
+            ]
+          },
+          {
+            "type": "PATTERN",
+            "value": "[a-zA-Z_][^\\r\\n]*"
+          }
+        ]
+      }
+    },
+    "shell_statement": {
+      "type": "TOKEN",
+      "content": {
+        "type": "SEQ",
+        "members": [
+          {
+            "type": "STRING",
+            "value": "!"
+          },
+          {
+            "type": "PATTERN",
+            "value": "[^\\r\\n]*"
+          }
+        ]
+      }
+    },
+    "help_statement": {
+      "type": "TOKEN",
+      "content": {
+        "type": "CHOICE",
+        "members": [
+          {
+            "type": "SEQ",
+            "members": [
+              {
+                "type": "PATTERN",
+                "value": "\\?\\??"
+              },
+              {
+                "type": "PATTERN",
+                "value": "[^\\r\\n]*"
+              }
+            ]
+          },
+          {
+            "type": "SEQ",
+            "members": [
+              {
+                "type": "PATTERN",
+                "value": "[a-zA-Z_][a-zA-Z0-9_.]*"
+              },
+              {
+                "type": "PATTERN",
+                "value": "\\?\\??"
+              }
+            ]
+          }
+        ]
+      }
     },
     "import_statement": {
       "type": "SEQ",

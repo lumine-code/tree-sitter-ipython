@@ -2,59 +2,38 @@ name: CI
 
 on:
   push:
-    branches: [master]
-    paths:
-      - grammar.js
-      - src/**
-      - test/**
-      - bindings/**
-      - binding.gyp
   pull_request:
-    paths:
-      - grammar.js
-      - src/**
-      - test/**
-      - bindings/**
-      - binding.gyp
+  workflow_dispatch:
+  workflow_call:
+
+permissions:
+  contents: read
 
 concurrency:
-  group: ${{github.workflow}}-${{github.ref}}
+  group: ${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: true
 
 jobs:
   test:
-    name: Test parser
-    runs-on: ${{matrix.os}}
+    name: Node ${{ matrix.node }} on ${{ matrix.os }}
+    runs-on: ${{ matrix.os }}
     strategy:
       fail-fast: false
       matrix:
-        os: [ubuntu-latest, windows-latest, macos-latest]
+        include:
+          - os: ubuntu-latest
+            node: 24
+          - os: macos-latest
+            node: 24
+          - os: windows-latest
+            node: 24
     steps:
-      - name: Checkout repository
-        uses: actions/checkout@v4
-      - name: Set up tree-sitter
-        uses: tree-sitter/setup-action/cli@v2
-      - name: Run tests
-        uses: tree-sitter/parser-test-action@v2
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v7
         with:
-          test-rust: true
-          test-node: true
-          test-python: true
-          test-go: true
-          test-swift: true
-      - name: Set up examples
-        run: |-
-          git clone https://github.com/numpy/numpy examples/numpy --single-branch --depth=1 --filter=blob:none
-          git clone https://github.com/django/django examples/django --single-branch --depth=1 --filter=blob:none
-          git clone https://github.com/pallets/flask examples/flask --single-branch --depth=1 --filter=blob:none
-          git clone https://github.com/python/cpython examples/cpython --single-branch --depth=1 --filter=blob:none
-      - name: Parse examples
-        uses: tree-sitter/parse-action@v4
-        with:
-          files: |
-            examples/**/*.py
-            !examples/cpython/Lib/test/test_annotationlib.py
-            !examples/cpython/Lib/test/test_compile.py
-            !examples/cpython/Lib/test/test_type_params.py
-          invalid-files: |
-            examples/cpython/Lib/test/tokenizedata/badsyntax_3131.py
+          node-version: ${{ matrix.node }}
+          cache: npm
+      - run: npm ci
+      - run: npm test
+      - run: npm run build:wasm
+      - run: npm pack --dry-run

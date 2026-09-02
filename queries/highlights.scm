@@ -1,3 +1,10 @@
+; IPython statements
+
+(magic_statement) @function.macro
+(shell_statement) @string.special
+(help_statement) @operator
+(cell_marker) @comment
+
 ; Identifier naming conventions
 
 (identifier) @variable

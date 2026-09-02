@@ -1,5 +1,5 @@
 /**
- * @file Python grammar for tree-sitter
+ * @file IPython grammar for tree-sitter
  * @author Max Brunsfeld <maxbrunsfeld@gmail.com>
  * @license MIT
  * @see {@link https://docs.python.org/2/reference/grammar.html|Python 2 grammar}
@@ -37,7 +37,7 @@ const PREC = {
 const SEMICOLON = ';';
 
 module.exports = grammar({
-  name: 'python',
+  name: 'ipython',
 
   extras: $ => [
     $.comment,
@@ -148,7 +148,47 @@ module.exports = grammar({
       $.nonlocal_statement,
       $.exec_statement,
       $.type_alias_statement,
+      $.cell_marker,
+      $.magic_statement,
+      $.shell_statement,
+      $.help_statement,
     ),
+
+    // IPython additions are single-line statements. A cell marker has higher
+    // lexical precedence than a comment only where a statement may start, so
+    // inline `x # %%` text remains an ordinary Python comment.
+    cell_marker: $ => seq(
+      field('marker', $.cell_marker_marker),
+      optional(token.immediate(/[ \t]+/)),
+      optional(choice(
+        seq(
+          field('metadata', $.cell_marker_metadata),
+          optional(seq(
+            token.immediate(/[ \t]+/),
+            field('name', $.cell_marker_name),
+          )),
+        ),
+        field('name', $.cell_marker_name),
+      )),
+    ),
+
+    cell_marker_marker: _ => token(prec(1, seq('#', /[ \t]*/, /%%+/))),
+
+    cell_marker_metadata: _ => token.immediate(prec(1, /\[(?:md|markdown)\]/)),
+
+    cell_marker_name: _ => token.immediate(/[^\s\r\n](?:[^\r\n]*[^\s\r\n])?/),
+
+    // Magics, shell escapes, and help requests can only win where a statement
+    // may start, so modulo, comparisons, and f-string conversions remain
+    // Python syntax.
+    magic_statement: _ => token(seq(choice('%%', '%'), /[a-zA-Z_][^\r\n]*/)),
+
+    shell_statement: _ => token(seq('!', /[^\r\n]*/)),
+
+    help_statement: _ => token(choice(
+      seq(/\?\??/, /[^\r\n]*/),
+      seq(/[a-zA-Z_][a-zA-Z0-9_.]*/, /\?\??/),
+    )),
 
     import_statement: $ => seq(
       'import',

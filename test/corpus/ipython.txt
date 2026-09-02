@@ -1,0 +1,251 @@
+================================================================================
+IPython line magics
+================================================================================
+
+%matplotlib inline
+%timeit f(x)
+%pwd
+
+--------------------------------------------------------------------------------
+
+(module
+  (magic_statement)
+  (magic_statement)
+  (magic_statement))
+
+================================================================================
+IPython cell markers
+================================================================================
+
+# %%
+# %% title
+# %%Title
+# %% [markdown] title
+# %% [markdown]
+#%% compact
+# %%% Sekcja
+# %% markdown Overview
+# %% markdown
+# %% md Short
+# %% MARKDOWN Upper
+# %% markdownish benchmark
+# %% mda title
+# %% mdark title
+# %% mdx title
+# %% [section] title
+# %% [notes]
+
+--------------------------------------------------------------------------------
+
+(module
+  (cell_marker
+    marker: (cell_marker_marker))
+  (cell_marker
+    marker: (cell_marker_marker)
+    name: (cell_marker_name))
+  (cell_marker
+    marker: (cell_marker_marker)
+    name: (cell_marker_name))
+  (cell_marker
+    marker: (cell_marker_marker)
+    metadata: (cell_marker_metadata)
+    name: (cell_marker_name))
+  (cell_marker
+    marker: (cell_marker_marker)
+    metadata: (cell_marker_metadata))
+  (cell_marker
+    marker: (cell_marker_marker)
+    name: (cell_marker_name))
+  (cell_marker
+    marker: (cell_marker_marker)
+    name: (cell_marker_name))
+  (cell_marker
+    marker: (cell_marker_marker)
+    name: (cell_marker_name))
+  (cell_marker
+    marker: (cell_marker_marker)
+    name: (cell_marker_name))
+  (cell_marker
+    marker: (cell_marker_marker)
+    name: (cell_marker_name))
+  (cell_marker
+    marker: (cell_marker_marker)
+    name: (cell_marker_name))
+  (cell_marker
+    marker: (cell_marker_marker)
+    name: (cell_marker_name))
+  (cell_marker
+    marker: (cell_marker_marker)
+    name: (cell_marker_name))
+  (cell_marker
+    marker: (cell_marker_marker)
+    name: (cell_marker_name))
+  (cell_marker
+    marker: (cell_marker_marker)
+    name: (cell_marker_name))
+  (cell_marker
+    marker: (cell_marker_marker)
+    name: (cell_marker_name))
+  (cell_marker
+    marker: (cell_marker_marker)
+    name: (cell_marker_name)))
+
+================================================================================
+IPython cell markers inside blocks
+================================================================================
+
+if x:
+    # %%% Inner
+    y = 1
+
+--------------------------------------------------------------------------------
+
+(module
+  (if_statement
+    condition: (identifier)
+    consequence: (block
+      (cell_marker
+        marker: (cell_marker_marker)
+        name: (cell_marker_name))
+      (assignment
+        left: (identifier)
+        right: (integer)))))
+
+================================================================================
+Cell marker lookalikes remain comments
+================================================================================
+
+# %
+# ordinary comment
+x = 1 # %%
+
+--------------------------------------------------------------------------------
+
+(module
+  (comment)
+  (comment)
+  (assignment
+    (identifier)
+    (integer))
+  (comment))
+
+================================================================================
+IPython cell magics
+================================================================================
+
+%%timeit
+f(x)
+
+--------------------------------------------------------------------------------
+
+(module
+  (magic_statement)
+  (call
+    (identifier)
+    (argument_list
+      (identifier))))
+
+================================================================================
+IPython magics between statements keep neighbors intact
+================================================================================
+
+a = 1
+%cd ..
+b = 2
+
+--------------------------------------------------------------------------------
+
+(module
+  (assignment
+    (identifier)
+    (integer))
+  (magic_statement)
+  (assignment
+    (identifier)
+    (integer)))
+
+================================================================================
+IPython magics inside a block
+================================================================================
+
+if x:
+    %time f()
+
+--------------------------------------------------------------------------------
+
+(module
+  (if_statement
+    (identifier)
+    (block
+      (magic_statement))))
+
+================================================================================
+IPython shell escapes
+================================================================================
+
+!pip install numpy
+!ls -la
+
+--------------------------------------------------------------------------------
+
+(module
+  (shell_statement)
+  (shell_statement))
+
+================================================================================
+IPython help requests
+================================================================================
+
+np.mean?
+np.mean??
+?np.mean
+??np.mean
+
+--------------------------------------------------------------------------------
+
+(module
+  (help_statement)
+  (help_statement)
+  (help_statement)
+  (help_statement))
+
+================================================================================
+IPython additions leave the modulo operator alone
+================================================================================
+
+c = a % b
+a % b
+
+--------------------------------------------------------------------------------
+
+(module
+  (assignment
+    (identifier)
+    (binary_operator
+      (identifier)
+      (identifier)))
+  (binary_operator
+    (identifier)
+    (identifier)))
+
+================================================================================
+IPython additions leave comparisons and f-string conversions alone
+================================================================================
+
+a != b
+x = f"{v!r}"
+
+--------------------------------------------------------------------------------
+
+(module
+  (comparison_operator
+    (identifier)
+    (identifier))
+  (assignment
+    (identifier)
+    (string
+      (string_start)
+      (interpolation
+        (identifier)
+        (type_conversion))
+      (string_end))))

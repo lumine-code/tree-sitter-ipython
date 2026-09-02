@@ -1,24 +1,44 @@
-# tree-sitter-python
+# tree-sitter-ipython
 
-[![CI][ci]](https://github.com/tree-sitter/tree-sitter-python/actions/workflows/ci.yml)
-[![discord][discord]](https://discord.gg/w7nTvsVJhm)
-[![matrix][matrix]](https://matrix.to/#/#tree-sitter-chat:matrix.org)
-[![crates][crates]](https://crates.io/crates/tree-sitter-python)
-[![npm][npm]](https://www.npmjs.com/package/tree-sitter-python)
-[![pypi][pypi]](https://pypi.org/project/tree-sitter-python/)
+Parses IPython source files with Tree-sitter.
 
-Python grammar for [tree-sitter][].
+This parser is derived from `tree-sitter-python` at `26855eabccb19c6abf499fbc5b8dc7cc9ab8bc64`. Its grammar extensions cover IPython magics, shell escapes, help requests, and structured cell markers.
 
-[tree-sitter]: https://github.com/tree-sitter/tree-sitter
+## Features
 
-## References
+- **Grammars**: provides a Tree-sitter grammar for IPython source files.
+- **Cell markers**: parses `# %% Title`, deeper `%` runs, and bracketed `[markdown]` metadata into separate marker, metadata, and name fields.
+- **Magics**: parses line and cell magics as `magic_statement` nodes.
+- **Shell escapes**: parses shell command lines as `shell_statement` nodes.
+- **Help requests**: parses prefix and suffix help syntax as `help_statement` nodes.
+- **Python compatibility**: preserves the upstream Python tree shape for ordinary source.
+- **Bindings**: supports Node-API, source, and WebAssembly builds.
 
-- [Python 2 Grammar](https://docs.python.org/2/reference/grammar.html)
-- [Python 3 Grammar](https://docs.python.org/3/reference/grammar.html)
+## Installation
 
-[ci]: https://img.shields.io/github/actions/workflow/status/tree-sitter/tree-sitter-python/ci.yml?logo=github&label=CI
-[discord]: https://img.shields.io/discord/1063097320771698699?logo=discord&label=discord
-[matrix]: https://img.shields.io/matrix/tree-sitter-chat%3Amatrix.org?logo=matrix&label=matrix
-[npm]: https://img.shields.io/npm/v/tree-sitter-python?logo=npm
-[crates]: https://img.shields.io/crates/v/tree-sitter-python?logo=rust
-[pypi]: https://img.shields.io/pypi/v/tree-sitter-python?logo=pypi&logoColor=ffd242
+```sh
+npm install tree-sitter @lumine-code/tree-sitter-ipython
+```
+
+## Usage
+
+```js
+const Parser = require('tree-sitter');
+const IPython = require('@lumine-code/tree-sitter-ipython');
+
+const parser = new Parser();
+parser.setLanguage(IPython);
+const tree = parser.parse('%matplotlib inline\nvalue = 1\n');
+```
+
+## Building
+
+```sh
+npm install
+npm test
+npm run build:wasm
+```
+
+## Contributing
+
+Got ideas to make this package better, found a bug, or want to help add new features? Just drop your thoughts on GitHub. Any feedback is welcome!
