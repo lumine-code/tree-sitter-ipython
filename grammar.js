@@ -1233,7 +1233,7 @@ module.exports = grammar({
       $.primary_expression,
     )),
 
-    comment: _ => token(seq('#', /.*/)),
+    comment: _ => token(seq('#', /[^\r\n]*/)),
 
     line_continuation: _ => token(seq('\\', choice(seq(optional('\r'), '\n'), '\0'))),
 

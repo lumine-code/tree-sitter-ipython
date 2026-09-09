@@ -25,3 +25,23 @@ test('exposes a cell marker level and title separately', () => {
   assert.strictEqual(marker.childForFieldName('name').text, 'Sekcja');
   assert.strictEqual(marker.childForFieldName('metadata'), null);
 });
+
+test('excludes CRLF line endings from comment text and end positions', () => {
+  const parser = new Parser();
+  parser.setLanguage(require('.'));
+
+  const tree = parser.parse('# first\r\nvalue = 1 # second\r\n');
+  const comments = tree.rootNode.descendantsOfType('comment');
+
+  assert.deepStrictEqual(
+    comments.map((comment) => comment.text),
+    ['# first', '# second'],
+  );
+  assert.deepStrictEqual(
+    comments.map((comment) => [comment.endPosition.row, comment.endPosition.column]),
+    [
+      [0, 7],
+      [1, 18],
+    ],
+  );
+});
