@@ -1160,7 +1160,7 @@ module.exports = grammar({
     format_specifier: $ => seq(
       ':',
       repeat(choice(
-        token(prec(1, /[^{}\n]+/)),
+        token(prec(1, /[^{}\r\n]+/)),
         alias($.interpolation, $.format_expression),
       )),
     ),

@@ -45,3 +45,17 @@ test('excludes CRLF line endings from comment text and end positions', () => {
     ],
   );
 });
+
+test('excludes CRLF line endings from format specifier text and end positions', () => {
+  const parser = new Parser();
+  parser.setLanguage(require('.'));
+
+  const tree = parser.parse('f"""{x:>10\r\n}"""');
+  const formatSpecifier = tree.rootNode.descendantsOfType('format_specifier')[0];
+
+  assert.strictEqual(formatSpecifier.text, ':>10');
+  assert.deepStrictEqual(
+    [formatSpecifier.endPosition.row, formatSpecifier.endPosition.column],
+    [0, 10],
+  );
+});
