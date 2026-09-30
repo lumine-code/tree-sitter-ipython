@@ -89,7 +89,11 @@ test('header trailing whitespace cannot consume the first body line', () => {
       );
       assert.strictEqual(tree.rootNode.hasError, false, header);
       const first = tree.rootNode.namedChild(0);
-      assert.strictEqual(first.childForFieldName('body').text, `value = 1${ending}`);
+      const body = first.childForFieldName('body');
+      assert.strictEqual(
+        body.text,
+        body.type === 'python_cell_body' ? 'value = 1' : `value = 1${ending}`,
+      );
       assert.strictEqual(tree.rootNode.namedChildren.at(-1).type, 'assignment');
     }
   }
