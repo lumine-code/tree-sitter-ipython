@@ -231,6 +231,7 @@ bool tree_sitter_ipython_external_scanner_scan(void *payload, TSLexer *lexer, co
     bool error_recovery_mode = valid_symbols[STRING_CONTENT] && valid_symbols[INDENT];
 
     if (!error_recovery_mode && valid_symbols[CELL_HEADER_END]) {
+        while (lexer->lookahead == ' ' || lexer->lookahead == '\t') advance(lexer);
         if (lexer->lookahead != '\r' && lexer->lookahead != '\n' && !lexer->eof(lexer)) return false;
         if (lexer->lookahead == '\r') advance(lexer);
         if (lexer->lookahead == '\n') advance(lexer);

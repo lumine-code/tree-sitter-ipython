@@ -81,6 +81,20 @@ test('preserves literal bodies, empty cells, and precise CRLF boundaries', () =>
   assert.strictEqual(tree.rootNode.namedChild(1).childForFieldName('body'), null);
 });
 
+test('header trailing whitespace cannot consume the first body line', () => {
+  for (const header of ['# %% [raw]', '# %% [markdown]', '%%bash', '%%time']) {
+    for (const ending of ['\n', '\r\n']) {
+      const { tree } = parse(
+        `${header} \t  ${ending}value = 1${ending}# %% Next${ending}after = 2${ending}`,
+      );
+      assert.strictEqual(tree.rootNode.hasError, false, header);
+      const first = tree.rootNode.namedChild(0);
+      assert.strictEqual(first.childForFieldName('body').text, `value = 1${ending}`);
+      assert.strictEqual(tree.rootNode.namedChildren.at(-1).type, 'assignment');
+    }
+  }
+});
+
 test('classifies exact marker metadata and keeps titles separate', () => {
   const headers = [
     '[markdown]',
