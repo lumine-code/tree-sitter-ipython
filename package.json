@@ -57,6 +57,7 @@
     "build": "npm run generate && npm run build:native",
     "build:native": "node-gyp rebuild",
     "build:wasm": "tree-sitter build --wasm",
+    "benchmark:cells": "node scripts/benchmark-cells.js",
     "check:format": "prettier --check .",
     "check:generated": "node scripts/check-generated.js",
     "format": "prettier --write .",

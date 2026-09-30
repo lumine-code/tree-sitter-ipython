@@ -1,0 +1,213 @@
+================================================================================
+Literal Markdown and raw bodies preserve following Python
+================================================================================
+
+before = 1
+# %% [markdown] Notes
+# Heading
+**bold** and `inline`
+# %% [raw] Payload
+anything: <tag> { unclosed
+# %% Code
+after = 2
+
+--------------------------------------------------------------------------------
+
+(module
+  (assignment
+    (identifier)
+    (integer))
+  (markdown_cell
+    (cell_marker
+      (cell_marker_marker)
+      (cell_marker_metadata)
+      (cell_marker_name))
+    (cell_body))
+  (raw_cell
+    (cell_marker
+      (cell_marker_marker)
+      (cell_marker_metadata)
+      (cell_marker_name))
+    (cell_body))
+  (cell_marker
+    (cell_marker_marker)
+    (cell_marker_name))
+  (assignment
+    (identifier)
+    (integer)))
+
+================================================================================
+Foreign and custom cell magics have opaque bodies
+================================================================================
+
+%%bash -x
+echo hello
+if true; then
+  echo world
+fi
+# %% HTML
+%%html --isolated
+<h1>Title</h1>
+# %% Extension
+%%custom argument
+not Python at all {
+# %% Python
+value = 3
+
+--------------------------------------------------------------------------------
+
+(module
+  (cell_magic
+    (cell_magic_name)
+    (cell_magic_arguments)
+    (cell_body))
+  (cell_marker
+    (cell_marker_marker)
+    (cell_marker_name))
+  (cell_magic
+    (cell_magic_name)
+    (cell_magic_arguments)
+    (cell_body))
+  (cell_marker
+    (cell_marker_marker)
+    (cell_marker_name))
+  (cell_magic
+    (cell_magic_name)
+    (cell_magic_arguments)
+    (cell_body))
+  (cell_marker
+    (cell_marker_marker)
+    (cell_marker_name))
+  (assignment
+    (identifier)
+    (integer)))
+
+================================================================================
+Python cell magic body contains ordinary Python
+================================================================================
+
+# %% Timing
+%%timeit -n 2
+def work():
+    return 42
+work()
+# %% Next
+answer = 42
+
+--------------------------------------------------------------------------------
+
+(module
+  (cell_marker
+    (cell_marker_marker)
+    (cell_marker_name))
+  (cell_magic
+    (cell_magic_name)
+    (cell_magic_arguments)
+    (python_cell_body
+      (function_definition
+        (identifier)
+        (parameters)
+        (block
+          (return_statement
+            (integer))))
+      (call
+        (identifier)
+        (argument_list))))
+  (cell_marker
+    (cell_marker_marker)
+    (cell_marker_name))
+  (assignment
+    (identifier)
+    (integer)))
+
+================================================================================
+Assignments from magics and shell preserve assignment fields
+================================================================================
+
+directory = %pwd
+listing = !ls
+typed: list = !!ls
+timing = %timeit -o work()
+remainder = a % b
+different = a != b
+formatted = f"{value!r}"
+
+--------------------------------------------------------------------------------
+
+(module
+  (assignment
+    (identifier)
+    (magic_expression))
+  (assignment
+    (identifier)
+    (shell_expression))
+  (assignment
+    (identifier)
+    (type
+      (identifier))
+    (shell_expression))
+  (assignment
+    (identifier)
+    (magic_expression))
+  (assignment
+    (identifier)
+    (binary_operator
+      (identifier)
+      (identifier)))
+  (assignment
+    (identifier)
+    (comparison_operator
+      (identifier)
+      (identifier)))
+  (assignment
+    (identifier)
+    (string
+      (string_start)
+      (interpolation
+        (identifier)
+        (type_conversion))
+      (string_end))))
+
+================================================================================
+Cell marker lookalikes in strings and brackets do not split cells
+================================================================================
+
+text = """
+# %% [markdown]
+"""
+values = [
+# %% [raw]
+1,
+]
+if ready:
+    # %% [markdown]
+    result = 1
+# %% [raw]
+payload
+
+--------------------------------------------------------------------------------
+
+(module
+  (assignment
+    (identifier)
+    (string
+      (string_start)
+      (string_content)
+      (string_end)))
+  (assignment
+    (identifier)
+    (list
+      (comment)
+      (integer)))
+  (if_statement
+    (identifier)
+    (comment)
+    (block
+      (assignment
+        (identifier)
+        (integer))))
+  (raw_cell
+    (cell_marker
+      (cell_marker_marker)
+      (cell_marker_metadata))
+    (cell_body)))

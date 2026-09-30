@@ -89,6 +89,13 @@ module.exports = grammar({
     ')',
     '}',
     'except',
+    $._code_cell_marker,
+    $._markdown_cell_marker,
+    $._raw_cell_marker,
+    $._python_cell_magic,
+    $._foreign_cell_magic,
+    $._cell_header_end,
+    $._cell_body_chunk,
   ],
 
   inline: $ => [
@@ -116,7 +123,53 @@ module.exports = grammar({
   word: $ => $.identifier,
 
   rules: {
-    module: $ => repeat($._statement),
+    module: $ => seq(
+      optional($._code_cell_content),
+      repeat(choice(
+        seq($.cell_marker, $._cell_header_end, optional($._code_cell_content)),
+        $.markdown_cell,
+        $.raw_cell,
+      )),
+    ),
+
+    _code_cell_content: $ => choice($.cell_magic, repeat1($._statement)),
+
+    markdown_cell: $ => seq(
+      field('marker', alias($._markdown_cell_header, $.cell_marker)),
+      $._cell_header_end,
+      optional(field('body', $.cell_body)),
+    ),
+
+    raw_cell: $ => seq(
+      field('marker', alias($._raw_cell_header, $.cell_marker)),
+      $._cell_header_end,
+      optional(field('body', $.cell_body)),
+    ),
+
+    // Hidden bounded leaves keep incremental tokenization local without
+    // exposing a node for every line to consumers or injection callbacks.
+    cell_body: $ => repeat1($._cell_body_chunk),
+
+    cell_magic: $ => choice(
+      seq(
+        alias($._python_cell_magic, '%%'),
+        field('name', $.cell_magic_name),
+        optional(seq(token.immediate(/[ \t]+/), field('arguments', $.cell_magic_arguments))),
+        $._cell_header_end,
+        optional(field('body', $.python_cell_body)),
+      ),
+      seq(
+        alias($._foreign_cell_magic, '%%'),
+        field('name', $.cell_magic_name),
+        optional(seq(token.immediate(/[ \t]+/), field('arguments', $.cell_magic_arguments))),
+        $._cell_header_end,
+        optional(field('body', $.cell_body)),
+      ),
+    ),
+
+    cell_magic_name: _ => token.immediate(choice(/[a-zA-Z_][a-zA-Z_0-9]*/, '!')),
+    cell_magic_arguments: _ => token.immediate(/[^\r\n]+/),
+    python_cell_body: $ => repeat1($._statement),
 
     _statement: $ => choice(
       $._simple_statements,
@@ -148,7 +201,6 @@ module.exports = grammar({
       $.nonlocal_statement,
       $.exec_statement,
       $.type_alias_statement,
-      $.cell_marker,
       $.magic_statement,
       $.shell_statement,
       $.help_statement,
@@ -158,30 +210,35 @@ module.exports = grammar({
     // lexical precedence than a comment only where a statement may start, so
     // inline `x # %%` text remains an ordinary Python comment.
     cell_marker: $ => seq(
-      field('marker', $.cell_marker_marker),
+      field('marker', alias($._code_cell_marker, $.cell_marker_marker)),
       optional(token.immediate(/[ \t]+/)),
-      optional(choice(
-        seq(
-          field('metadata', $.cell_marker_metadata),
-          optional(seq(
-            token.immediate(/[ \t]+/),
-            field('name', $.cell_marker_name),
-          )),
-        ),
-        field('name', $.cell_marker_name),
-      )),
+      optional(field('name', $.cell_marker_name)),
     ),
 
-    cell_marker_marker: _ => token(prec(1, seq('#', /[ \t]*/, /%%+/))),
+    _markdown_cell_header: $ => seq(
+      field('marker', alias($._markdown_cell_marker, $.cell_marker_marker)),
+      token.immediate(/[ \t]+/),
+      field('metadata', $.cell_marker_metadata),
+      optional(seq(token.immediate(/[ \t]+/), field('name', $.cell_marker_name))),
+    ),
 
-    cell_marker_metadata: _ => token.immediate(prec(1, /\[(?:md|markdown)\]/)),
+    _raw_cell_header: $ => seq(
+      field('marker', alias($._raw_cell_marker, $.cell_marker_marker)),
+      token.immediate(/[ \t]+/),
+      field('metadata', $.cell_marker_metadata),
+      optional(seq(token.immediate(/[ \t]+/), field('name', $.cell_marker_name))),
+    ),
+
+    cell_marker_metadata: _ => token.immediate(prec(1, choice(
+      '[md]', '[markdown]', '[raw]', 'md', 'markdown', 'raw',
+    ))),
 
     cell_marker_name: _ => token.immediate(/[^\s\r\n](?:[^\r\n]*[^\s\r\n])?/),
 
     // Magics, shell escapes, and help requests can only win where a statement
     // may start, so modulo, comparisons, and f-string conversions remain
     // Python syntax.
-    magic_statement: _ => token(seq(choice('%%', '%'), /[a-zA-Z_][^\r\n]*/)),
+    magic_statement: _ => token(seq('%', /[a-zA-Z_][^\r\n]*/)),
 
     shell_statement: _ => token(seq('!', /[^\r\n]*/)),
 
@@ -885,8 +942,13 @@ module.exports = grammar({
         seq('=', field('right', $._right_hand_side)),
         seq(':', field('type', $.type)),
         seq(':', field('type', $.type), '=', field('right', $._right_hand_side)),
+        seq('=', field('right', choice($.magic_expression, $.shell_expression))),
+        seq(':', field('type', $.type), '=', field('right', choice($.magic_expression, $.shell_expression))),
       ),
     ),
+
+    magic_expression: _ => token(seq('%', /[a-zA-Z_][^\r\n]*/)),
+    shell_expression: _ => token(seq('!', /[^\r\n]*/)),
 
     augmented_assignment: $ => seq(
       field('left', $._left_hand_side),

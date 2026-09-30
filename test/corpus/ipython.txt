@@ -46,28 +46,35 @@ IPython cell markers
   (cell_marker
     marker: (cell_marker_marker)
     name: (cell_marker_name))
-  (cell_marker
-    marker: (cell_marker_marker)
-    metadata: (cell_marker_metadata)
-    name: (cell_marker_name))
-  (cell_marker
-    marker: (cell_marker_marker)
-    metadata: (cell_marker_metadata))
-  (cell_marker
-    marker: (cell_marker_marker)
-    name: (cell_marker_name))
-  (cell_marker
-    marker: (cell_marker_marker)
-    name: (cell_marker_name))
+  (markdown_cell
+    marker: (cell_marker
+      marker: (cell_marker_marker)
+      metadata: (cell_marker_metadata)
+      name: (cell_marker_name)))
+  (markdown_cell
+    marker: (cell_marker
+      marker: (cell_marker_marker)
+      metadata: (cell_marker_metadata)))
   (cell_marker
     marker: (cell_marker_marker)
     name: (cell_marker_name))
   (cell_marker
     marker: (cell_marker_marker)
     name: (cell_marker_name))
-  (cell_marker
-    marker: (cell_marker_marker)
-    name: (cell_marker_name))
+  (markdown_cell
+    marker: (cell_marker
+      marker: (cell_marker_marker)
+      metadata: (cell_marker_metadata)
+      name: (cell_marker_name)))
+  (markdown_cell
+    marker: (cell_marker
+      marker: (cell_marker_marker)
+      metadata: (cell_marker_metadata)))
+  (markdown_cell
+    marker: (cell_marker
+      marker: (cell_marker_marker)
+      metadata: (cell_marker_metadata)
+      name: (cell_marker_name)))
   (cell_marker
     marker: (cell_marker_marker)
     name: (cell_marker_name))
@@ -103,10 +110,8 @@ if x:
 (module
   (if_statement
     condition: (identifier)
+    (comment)
     consequence: (block
-      (cell_marker
-        marker: (cell_marker_marker)
-        name: (cell_marker_name))
       (assignment
         left: (identifier)
         right: (integer)))))
@@ -139,11 +144,13 @@ f(x)
 --------------------------------------------------------------------------------
 
 (module
-  (magic_statement)
-  (call
-    (identifier)
-    (argument_list
-      (identifier))))
+  (cell_magic
+    (cell_magic_name)
+    (python_cell_body
+      (call
+        (identifier)
+        (argument_list
+          (identifier))))))
 
 ================================================================================
 IPython magics between statements keep neighbors intact
