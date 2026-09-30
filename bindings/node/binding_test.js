@@ -215,3 +215,42 @@ test('incremental raw-body edits preserve the next marker and assignment', () =>
   assert.strictEqual(edited.rootNode.namedChild(1).childForFieldName('name').text, 'Next');
   assert.strictEqual(edited.rootNode.namedChild(2).childForFieldName('left').text, 'after');
 });
+
+test('incremental middle and end edits in an 8 MiB line retain opaque scanner state', () => {
+  const prefix = '# %% [raw]\n';
+  const original = 'x'.repeat(8 * 1024 * 1024);
+  for (const column of [original.length / 2, original.length - 2]) {
+    for (const kind of ['replace', 'insert', 'delete']) {
+      let body = original;
+      let source = `${prefix}${body}\n# %% Next\nafter = 1\n`;
+      const { parser, tree } = parse(source);
+      const oldLength = kind === 'insert' ? 0 : 1;
+      const replacement = kind === 'delete' ? '' : '#';
+      const index = prefix.length + column;
+      tree.edit({
+        startIndex: index,
+        oldEndIndex: index + oldLength,
+        newEndIndex: index + replacement.length,
+        startPosition: { row: 1, column },
+        oldEndPosition: { row: 1, column: column + oldLength },
+        newEndPosition: { row: 1, column: column + replacement.length },
+      });
+      body = body.slice(0, column) + replacement + body.slice(column + oldLength);
+      source = `${prefix}${body}\n# %% Next\nafter = 1\n`;
+      const edited = parser.parse(source, tree);
+      assert.strictEqual(edited.rootNode.hasError, false);
+      assert.strictEqual(edited.rootNode.namedChild(0).childForFieldName('body').text, `${body}\n`);
+      assert.strictEqual(edited.rootNode.namedChild(1).childForFieldName('name').text, 'Next');
+      assert.strictEqual(edited.rootNode.namedChild(2).childForFieldName('left').text, 'after');
+    }
+  }
+});
+
+test('chunk boundaries preserve CRLF and the next real marker', () => {
+  const body = `${'x'.repeat(4095)}\r\n# ordinary body\r\n${'x'.repeat(4096)}# %% midline\r\n`;
+  const { tree } = parse(`# %% [raw]\r\n${body}# %% Next\r\nafter = 1\r\n`);
+  assert.strictEqual(tree.rootNode.hasError, false);
+  assert.strictEqual(tree.rootNode.namedChild(0).childForFieldName('body').text, body);
+  assert.strictEqual(tree.rootNode.namedChild(1).childForFieldName('name').text, 'Next');
+  assert.strictEqual(tree.rootNode.namedChild(2).type, 'assignment');
+});

@@ -53,6 +53,8 @@ echo hello
 
 Opaque body leaves consume at most 4096 Unicode code points per scanner call, including speculative marker lookahead. Recognition of the `#` and whitespace before the first two `%` characters has the same bound; a longer prefix remains body text. Hidden chunks do not create a public node per line. Insertion or deletion in a very long line can still require reparsing several chunks.
 
+The scanner serializes whether an opaque chunk ends at a line start. Resuming a middle chunk after an incremental edit does not seek backwards through a long line to determine its column.
+
 ## Building
 
 ```sh
@@ -62,6 +64,14 @@ npm run build:wasm
 ```
 
 `npm run benchmark:cells` reports native cold and incremental parsing for large raw cells, including a single long line. Run it separately from other timing workloads. The editor's committed WebAssembly artifact and provenance are rebuilt through `lem grammar` from a pushed immutable parser commit.
+
+For a native parser comparison, keep an original binding and the candidate binding and run:
+
+```sh
+node --expose-gc scripts/benchmark-native-parser.js --baseline=<baseline.node> --candidate=<candidate.node> --series=3 --warmup=5 --samples=30 --sizes=1048576,8388608 --output=<results.json>
+```
+
+The matrix compares identical ordinary Python inputs and verifies their ASTs once before measurement. Candidate opaque bodies are separate diagnostics for long lines, many lines, and oversized marker-like prefixes. It records cold parses, replacement, insertion and deletion at the beginning, middle and end, plus file hashes, runtime identity, individual samples and percentiles. AST hashing, collection, tree release and retained-memory reads stay outside measured parse latency. Use `--only=controls` or `--only=opaque` to run one part.
 
 ## Contributing
 

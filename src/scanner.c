@@ -94,6 +94,7 @@ typedef struct {
     Array(Delimiter) delimiters;
     bool inside_interpolated_string;
     bool cell_start;
+    bool body_line_start;
 } Scanner;
 
 static inline void advance(TSLexer *lexer) { lexer->advance(lexer, false); }
@@ -158,6 +159,7 @@ static bool finish_cell_marker(Scanner *scanner, TSLexer *lexer, const bool *val
     }
     if (!valid_symbols[type]) return false;
     scanner->cell_start = type == CODE_CELL_MARKER;
+    scanner->body_line_start = false;
     lexer->result_symbol = type;
     return true;
 }
@@ -193,13 +195,17 @@ static bool scan_cell_magic(Scanner *scanner, TSLexer *lexer, const bool *valid_
     enum TokenType type = python ? PYTHON_CELL_MAGIC : FOREIGN_CELL_MAGIC;
     if (!valid_symbols[type]) return false;
     scanner->cell_start = false;
+    scanner->body_line_start = false;
     lexer->result_symbol = type;
     return true;
 }
 
 static bool scan_cell_body(Scanner *scanner, TSLexer *lexer, const bool *valid_symbols) {
     uint32_t count = 0;
-    bool line_start = lexer->get_column(lexer) == 0;
+    // get_column can seek back to the start of a megabyte-long line after an
+    // incremental subtree reuse. Track this at token ends instead, so seeking
+    // to a middle chunk never performs work outside the chunk's budget.
+    bool line_start = scanner->body_line_start;
     lexer->mark_end(lexer);
     while (!lexer->eof(lexer) && count < CELL_CHUNK_LIMIT) {
         if (line_start && lexer->lookahead == '#') {
@@ -207,6 +213,7 @@ static bool scan_cell_body(Scanner *scanner, TSLexer *lexer, const bool *valid_s
             MarkerProbe probe = probe_marker(lexer, CELL_CHUNK_LIMIT - count, &consumed);
             if (probe == Marker || (probe == IncompleteMarker && count > 0)) {
                 if (!count) return finish_cell_marker(scanner, lexer, valid_symbols, consumed);
+                scanner->body_line_start = true;
                 lexer->result_symbol = CELL_BODY_CHUNK;
                 return true;
             }
@@ -221,6 +228,7 @@ static bool scan_cell_body(Scanner *scanner, TSLexer *lexer, const bool *valid_s
         lexer->mark_end(lexer);
     }
     if (!count) return false;
+    scanner->body_line_start = line_start;
     lexer->result_symbol = CELL_BODY_CHUNK;
     return true;
 }
@@ -237,6 +245,7 @@ bool tree_sitter_ipython_external_scanner_scan(void *payload, TSLexer *lexer, co
         if (lexer->lookahead == '\n') advance(lexer);
 
         lexer->mark_end(lexer);
+        scanner->body_line_start = true;
         lexer->result_symbol = CELL_HEADER_END;
         return true;
     }
@@ -553,6 +562,7 @@ unsigned tree_sitter_ipython_external_scanner_serialize(void *payload, char *buf
 
     buffer[size++] = (char)scanner->inside_interpolated_string;
     buffer[size++] = (char)scanner->cell_start;
+    buffer[size++] = (char)scanner->body_line_start;
 
     size_t delimiter_count = scanner->delimiters.size;
     if (delimiter_count > UINT8_MAX) {
@@ -566,7 +576,7 @@ unsigned tree_sitter_ipython_external_scanner_serialize(void *payload, char *buf
     size += delimiter_count;
 
     uint32_t iter = 1;
-    for (; iter < scanner->indents.size && size < TREE_SITTER_SERIALIZATION_BUFFER_SIZE; ++iter) {
+    for (; iter < scanner->indents.size && size + 2 <= TREE_SITTER_SERIALIZATION_BUFFER_SIZE; ++iter) {
         uint16_t indent_value = *array_get(&scanner->indents, iter);
         buffer[size++] = (char)(indent_value & 0xFF);
         buffer[size++] = (char)((indent_value >> 8) & 0xFF);
@@ -582,12 +592,14 @@ void tree_sitter_ipython_external_scanner_deserialize(void *payload, const char 
     array_delete(&scanner->indents);
     array_push(&scanner->indents, 0);
     scanner->cell_start = true;
+    scanner->body_line_start = true;
 
     if (length > 0) {
         size_t size = 0;
 
         scanner->inside_interpolated_string = (bool)buffer[size++];
         scanner->cell_start = (bool)buffer[size++];
+        scanner->body_line_start = (bool)buffer[size++];
 
         size_t delimiter_count = (uint8_t)buffer[size++];
         if (delimiter_count > 0) {
