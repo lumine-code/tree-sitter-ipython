@@ -61,8 +61,12 @@ function fixture(name, size) {
     if (name === 'opaque-long-line') payload = 'x'.repeat(size);
     else if (name === 'opaque-many-lines')
       payload = `${'x'.repeat(79)}\n`.repeat(Math.ceil(size / 80));
+    else if (name === 'opaque-tiny-lines') payload = 'x\n'.repeat(Math.ceil(size / 2));
+    else if (name === 'opaque-crlf') payload = 'x\r\n'.repeat(Math.ceil(size / 3));
+    else if (name === 'opaque-emoji') payload = '\u{1f600}\r\n'.repeat(Math.ceil(size / 6));
+    else if (name === 'opaque-eof') payload = 'x'.repeat(size);
     else payload = `#${' '.repeat(size)}%% Payload`;
-    suffix = '\n# %% Next\nresult = 1\n';
+    suffix = name === 'opaque-eof' ? '' : '\n# %% Next\nresult = 1\n';
   }
   const source = prefix + payload + suffix;
   const positions = [0, 0.5, 1].map((fraction) => {
@@ -70,7 +74,9 @@ function fixture(name, size) {
       name === 'opaque-pathological-prefix'
         ? 1 + Math.floor((size - 1) * fraction)
         : Math.floor((payload.length - 1) * fraction);
-    if (name !== 'opaque-pathological-prefix') {
+    if (name === 'opaque-eof' && fraction === 1) at = payload.length;
+    else if (name === 'opaque-emoji') at -= at % 4;
+    else if (name !== 'opaque-pathological-prefix') {
       if (fraction === 1) {
         while (at > 0 && payload[at] !== 'x') at--;
       } else {
@@ -90,10 +96,15 @@ function pointAt(source, index) {
 function validate(tree, item) {
   const root = tree.rootNode;
   assert.equal(root.hasError, false, item.name);
-  assert.equal(root.namedChild(root.namedChildCount - 1).type, 'assignment', item.name);
+  if (item.name !== 'opaque-eof')
+    assert.equal(root.namedChild(root.namedChildCount - 1).type, 'assignment', item.name);
   if (item.opaque) {
     assert.equal(root.namedChild(0).type, 'raw_cell');
-    assert.equal(root.namedChild(1).childForFieldName('name').text, 'Next');
+    if (item.name !== 'opaque-eof')
+      assert.equal(
+        root.namedChild(root.namedChildCount - 2).childForFieldName('name').text,
+        'Next',
+      );
   }
 }
 
@@ -110,27 +121,53 @@ function summarize(values) {
   };
 }
 
-// Cursor scalar access avoids materializing either a giant AST string or an
-// array of SyntaxNode wrappers. Proof traversal happens once, before timing.
-function astDigest(tree) {
-  const hash = crypto.createHash('sha256');
-  const cursor = tree.walk();
-  for (;;) {
-    hash.update(
-      JSON.stringify([
-        cursor.nodeType,
-        cursor.nodeIsNamed,
-        cursor.startIndex,
-        cursor.endIndex,
-        cursor.currentFieldName,
-        cursor.currentDepth,
-      ]),
-    );
-    if (cursor.gotoFirstChild()) continue;
-    while (!cursor.gotoNextSibling()) {
-      if (!cursor.gotoParent()) return hash.digest('hex');
+// Bounded proof samples five deterministic leaf windows rather than traversing
+// the entire multi-million-node Python tree. Full corpus compatibility is a
+// separate test. isExtra is reported separately for the declared top-level
+// comment difference, and excluded from the visible AST compatibility hash.
+function astDigest(tree, source) {
+  const root = tree.rootNode;
+  const structure = (node) => [
+    node.type,
+    node.isNamed,
+    node.startIndex,
+    node.endIndex,
+    node.startPosition,
+    node.endPosition,
+    node.childCount,
+    node.namedChildCount,
+  ];
+  const proof = { root: structure(root), windows: [] };
+  for (const fraction of [0, 0.25, 0.5, 0.75, 1]) {
+    const index = Math.min(source.length - 1, Math.floor(source.length * fraction));
+    const leaf = root.descendantForIndex(index);
+    const window = { fraction, ancestors: [], nodes: [], extraFlags: [] };
+    for (let node = leaf; node; node = node.parent) window.ancestors.push(structure(node));
+    const container = leaf.parent?.childCount <= 32 ? leaf.parent : leaf;
+    const cursor = container.walk();
+    for (let count = 0; count < 128; count++) {
+      const node = cursor.currentNode;
+      window.nodes.push([...structure(node), cursor.currentFieldName]);
+      window.extraFlags.push(node.isExtra);
+      if (cursor.gotoFirstChild()) continue;
+      while (!cursor.gotoNextSibling()) {
+        if (!cursor.gotoParent()) break;
+      }
+      if (cursor.currentNode.id === container.id) break;
     }
+    proof.windows.push(window);
   }
+  const extraFlags = proof.windows.map((window) => window.extraFlags);
+  const visible = {
+    ...proof,
+    windows: proof.windows.map(({ extraFlags: _extraFlags, ...window }) => window),
+  };
+  return {
+    sha256: digest(JSON.stringify(visible)),
+    extraFlags,
+    scope:
+      'root metadata and five deterministic leaf/ancestor windows; up to 128 descendants per window; type/named/positions/indices/counts/fields; excludes isExtra',
+  };
 }
 
 function releaseTree(tree) {
@@ -171,22 +208,26 @@ function measure(variant, item, series) {
   });
   for (const position of item.positions) {
     for (const kind of ['replace', 'insert', 'delete']) {
-      const oldLength = kind === 'insert' ? 0 : 1;
+      const editIndex =
+        position.index === item.source.length && kind !== 'insert'
+          ? position.index - 1
+          : position.index;
+      const codePointLength = item.source.codePointAt(editIndex) > 0xffff ? 2 : 1;
+      const oldLength =
+        kind === 'insert' ? 0 : editIndex === item.source.length ? 0 : codePointLength;
       const replacement = kind === 'delete' ? '' : 'y';
       const changed =
-        item.source.slice(0, position.index) +
-        replacement +
-        item.source.slice(position.index + oldLength);
-      const startPosition = pointAt(item.source, position.index);
-      const oldEndPosition = pointAt(item.source, position.index + oldLength);
+        item.source.slice(0, editIndex) + replacement + item.source.slice(editIndex + oldLength);
+      const startPosition = pointAt(item.source, editIndex);
+      const oldEndPosition = pointAt(item.source, editIndex + oldLength);
       const newEndPosition = {
         row: startPosition.row,
         column: startPosition.column + replacement.length,
       };
       const forward = {
-        startIndex: position.index,
-        oldEndIndex: position.index + oldLength,
-        newEndIndex: position.index + replacement.length,
+        startIndex: editIndex,
+        oldEndIndex: editIndex + oldLength,
+        newEndIndex: editIndex + replacement.length,
         startPosition,
         oldEndPosition,
         newEndPosition,
@@ -229,6 +270,9 @@ function measure(variant, item, series) {
         series,
         operation: kind,
         fraction: position.fraction,
+        editIndex,
+        oldLength,
+        replacement,
         values,
         memoryWithPreviousTree,
         memoryAfterRelease: process.memoryUsage(),
@@ -238,33 +282,45 @@ function measure(variant, item, series) {
   }
 }
 
+const opaqueNames = [
+  'opaque-long-line',
+  'opaque-many-lines',
+  'opaque-tiny-lines',
+  'opaque-crlf',
+  'opaque-emoji',
+  'opaque-eof',
+  'opaque-pathological-prefix',
+];
 const names =
   only === 'controls'
     ? ['code-dictionary', 'code-comments']
     : only === 'opaque'
-      ? ['opaque-long-line', 'opaque-many-lines', 'opaque-pathological-prefix']
-      : [
-          'code-dictionary',
-          'code-comments',
-          'opaque-long-line',
-          'opaque-many-lines',
-          'opaque-pathological-prefix',
-        ];
+      ? opaqueNames
+      : ['code-dictionary', 'code-comments', ...opaqueNames];
+fs.writeSync(
+  2,
+  `phase=setup node=${process.version} fixtures=${names.length} sizes=${sizes.join(',')}\n`,
+);
 const fixtures = sizes.flatMap((size) => names.map((name) => fixture(name, size)));
-for (const item of fixtures.filter((item) => !item.opaque)) {
-  const hashes = variants.map((variant) => {
+for (const item of fixtures) {
+  fs.writeSync(2, `phase=proof fixture=${item.name} size=${item.size}\n`);
+  const proofs = (
+    item.opaque ? variants.filter((variant) => variant.name === 'candidate') : variants
+  ).map((variant) => {
     const parser = new Parser();
     parser.setLanguage(variant.language);
     let tree = parser.parse(item.source);
-    const value = astDigest(tree);
+    validate(tree, item);
+    const value = astDigest(tree, item.source);
     releaseTree(tree);
     // eslint-disable-next-line no-useless-assignment -- Release native trees before unmeasured GC.
     tree = null;
     global.gc();
-    return value;
+    return { variant: variant.name, ...value };
   });
-  assert.equal(hashes[0], hashes[1], `${item.name} AST changed`);
-  item.astSha256 = hashes[0];
+  if (!item.opaque)
+    assert.equal(proofs[0].sha256, proofs[1].sha256, `${item.name} sampled visible AST changed`);
+  item.astProofs = proofs;
 }
 for (let series = 1; series <= seriesCount; series++) {
   const order = series % 2 ? variants : [...variants].reverse();
@@ -273,31 +329,38 @@ for (let series = 1; series <= seriesCount; series++) {
     for (const variant of item.opaque
       ? variants.filter((entry) => entry.name === 'candidate')
       : order) {
-      process.stderr.write(
+      fs.writeSync(
+        2,
         `series=${series} variant=${variant.name} fixture=${item.name} size=${item.size}\n`,
       );
       measure(variant, item, series);
+      if (options.output)
+        fs.writeFileSync(options.output, `${JSON.stringify(snapshot(), null, 2)}\n`);
     }
   }
 }
-const output = {
-  node: process.version,
-  nodeAbi: process.versions.modules,
-  platform: process.platform,
-  architecture: process.arch,
-  parameters: { samples, warmup, series: seriesCount, sizes, only },
-  bindings: variants.map(({ name, filename, sha256 }) => ({ name, filename, sha256 })),
-  runtimeAddons,
-  fixtures: fixtures.map(({ name, size, source, sha256, astSha256, opaque }) => ({
-    name,
-    size,
-    utf16Units: source.length,
-    sha256,
-    astSha256,
-    opaque,
-  })),
-  records,
-};
+function snapshot() {
+  return {
+    node: process.version,
+    nodeAbi: process.versions.modules,
+    platform: process.platform,
+    architecture: process.arch,
+    parameters: { samples, warmup, series: seriesCount, sizes, only },
+    bindings: variants.map(({ name, filename, sha256 }) => ({ name, filename, sha256 })),
+    runtimeAddons,
+    fixtures: fixtures.map(({ name, size, source, sha256, astProofs, opaque }) => ({
+      name,
+      size,
+      utf16Units: source.length,
+      sha256,
+      astProofs,
+      utf8Bytes: Buffer.byteLength(source),
+      opaque,
+    })),
+    records,
+  };
+}
+const output = snapshot();
 const serialized = `${JSON.stringify(output, null, 2)}\n`;
 if (options.output) fs.writeFileSync(options.output, serialized);
 else process.stdout.write(serialized);

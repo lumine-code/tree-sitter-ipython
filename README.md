@@ -71,7 +71,7 @@ For a native parser comparison, keep an original binding and the candidate bindi
 node --expose-gc scripts/benchmark-native-parser.js --baseline=<baseline.node> --candidate=<candidate.node> --series=3 --warmup=5 --samples=30 --sizes=1048576,8388608 --output=<results.json>
 ```
 
-The matrix compares identical ordinary Python inputs and verifies their ASTs once before measurement. Candidate opaque bodies are separate diagnostics for long lines, many lines, and oversized marker-like prefixes. It records cold parses, replacement, insertion and deletion at the beginning, middle and end, plus file hashes, runtime identity, individual samples and percentiles. AST hashing, collection, tree release and retained-memory reads stay outside measured parse latency. Use `--only=controls` or `--only=opaque` to run one part.
+The matrix compares identical ordinary Python inputs and checks root structure plus five bounded AST windows before measurement. Its JSON states the proof properties and records ancillary `isExtra` flags separately; the full corpus verifies ordinary Python syntax. Candidate diagnostics cover long lines, many lines, tiny lines, CRLF, astral Unicode, EOF and unlimited marker prefixes. It records cold parses, replacement, insertion and deletion at the beginning, middle and end, plus file hashes, runtime identity, individual samples and percentiles. AST proof, collection, tree release and retained-memory reads stay outside measured parse latency. Phase progress and partial results are written after each fixture/parser run. Use `--only=controls` or `--only=opaque` to run one part.
 
 ## Contributing
 

@@ -48,10 +48,11 @@ module.exports = grammar({
   conflicts: $ => [
     [$.markdown_cell],
     [$.raw_cell],
-    [$.cell_magic],
     [$.cell_body],
-    [$._code_cell_content],
     [$.python_cell_body],
+    [$._code_cell_content],
+    [$._code_cell],
+    [$.cell_magic],
     [$.cell_marker_name],
     [$.cell_marker],
     [$._markdown_cell_header],
@@ -134,15 +135,10 @@ module.exports = grammar({
   word: $ => $.identifier,
 
   rules: {
-    module: $ => seq(
-      optional($._code_cell_content),
-      repeat(choice(
-        seq($.cell_marker, $._cell_header_end, optional($._code_cell_content)),
-        $.markdown_cell,
-        $.raw_cell,
-      )),
-    ),
-
+    module: $ => seq(optional($._code_cell_content), repeat(choice(
+      $._code_cell, $.markdown_cell, $.raw_cell,
+    ))),
+    _code_cell: $ => seq($.cell_marker, $._cell_header_end, optional($._code_cell_content)),
     _code_cell_content: $ => choice($.cell_magic, repeat1(choice($._statement, alias($._prefix_comment, $.comment)))),
 
     markdown_cell: $ => seq(

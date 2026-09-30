@@ -200,6 +200,23 @@ test('cell magics only consume the first nonblank line of a code cell', () => {
   }
 });
 
+test('comment-first code cells and Python magic bodies retain comments at every boundary', () => {
+  for (const header of ['# %% Title', '# %% [code] Title', '%%time']) {
+    const { tree } = parse(
+      `${header}\n# first\nvalue = 1\n# %%\n# second\n# %%\n#${' '.repeat(10000)}`,
+    );
+    assert.strictEqual(tree.rootNode.hasError, false, header);
+    assert.deepStrictEqual(
+      tree.rootNode.descendantsOfType('comment').map((node) => node.text),
+      ['# first', '# second', `#${' '.repeat(10000)}`],
+    );
+    const assignment = tree.rootNode.descendantsOfType('assignment')[0];
+    assert.strictEqual(assignment.childForFieldName('left').text, 'value');
+    if (header === '%%time') assert.strictEqual(assignment.parent.type, 'python_cell_body');
+    else assert.strictEqual(assignment.parent.type, 'module');
+  }
+});
+
 test('opaque chunks preserve Unicode and oversized nonmarker prefixes', () => {
   for (const body of [
     'x'.repeat(1024 * 1024),
