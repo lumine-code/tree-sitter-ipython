@@ -54,9 +54,7 @@ module.exports = grammar({
     [$._code_cell],
     [$.cell_magic],
     [$.cell_marker_name],
-    [$.cell_marker],
-    [$._markdown_cell_header],
-    [$._raw_cell_header],
+    [$._leading_header_space, $._trailing_header_space],
     [$.primary_expression, $.pattern],
     [$.primary_expression, $.list_splat_pattern],
     [$.tuple, $.tuple_pattern],
@@ -94,10 +92,16 @@ module.exports = grammar({
     '}',
     'except',
     $._prefix_hash,
+    $._marker_hash,
+    $._comment_hash,
+    $._body_hash,
     $._prefix_space,
     $._prefix_percent_start,
     $._prefix_percent_more,
     $._header_space,
+    $._title_space,
+    $._trailing_space,
+    $._uncertain_space,
     $._markdown_cell_type,
     $._raw_cell_type,
     $._code_cell_type,
@@ -156,7 +160,7 @@ module.exports = grammar({
     // Hidden bounded leaves keep incremental tokenization local without
     // exposing a node for every line to consumers or injection callbacks.
     cell_body: $ => repeat1(choice($._cell_body_chunk, $._body_prefix)),
-    _body_prefix: $ => seq($._prefix_hash, repeat($._prefix_space)),
+    _body_prefix: $ => seq(choice($._prefix_hash, $._body_hash), repeat($._prefix_space)),
 
     cell_magic: $ => choice(
       seq(
@@ -217,7 +221,7 @@ module.exports = grammar({
     // Shared bounded prefix leaves are resolved as a marker only once the
     // percent terminal is found. No whitespace or outline-depth limit is imposed.
     cell_marker_marker: $ => seq(
-      $._prefix_hash,
+      choice($._prefix_hash, $._marker_hash),
       repeat($._prefix_space),
       $._prefix_percent_start,
       repeat($._prefix_percent_more),
@@ -225,31 +229,30 @@ module.exports = grammar({
 
     cell_marker: $ => choice(
       seq(field('marker', $.cell_marker_marker), optional(seq(
-        repeat($._header_space), field('name', $.cell_marker_name),
-      )), repeat($._header_space)),
-      seq(field('marker', $.cell_marker_marker), repeat1($._header_space),
+        repeat($._leading_header_space), field('name', $.cell_marker_name),
+      )), repeat($._trailing_header_space)),
+      seq(field('marker', $.cell_marker_marker), repeat1($._leading_header_space),
         field('metadata', alias($._code_cell_type, $.cell_marker_metadata)),
-        optional(seq(repeat1($._header_space), optional(field('name', $.cell_marker_name)))), repeat($._header_space)),
+        optional(seq(repeat1($._leading_header_space), field('name', $.cell_marker_name))),
+        repeat($._trailing_header_space)),
     ),
 
     _markdown_cell_header: $ => seq(
-      field('marker', $.cell_marker_marker),
-      repeat1($._header_space),
+      field('marker', $.cell_marker_marker), repeat1($._leading_header_space),
       field('metadata', alias($._markdown_cell_type, $.cell_marker_metadata)),
-      optional(seq(repeat1($._header_space), optional(field('name', $.cell_marker_name)))),
-      repeat($._header_space),
+      optional(seq(repeat1($._leading_header_space), field('name', $.cell_marker_name))),
+      repeat($._trailing_header_space),
     ),
-
     _raw_cell_header: $ => seq(
-      field('marker', $.cell_marker_marker),
-      repeat1($._header_space),
+      field('marker', $.cell_marker_marker), repeat1($._leading_header_space),
       field('metadata', alias($._raw_cell_type, $.cell_marker_metadata)),
-      optional(seq(repeat1($._header_space), optional(field('name', $.cell_marker_name)))),
-      repeat($._header_space),
+      optional(seq(repeat1($._leading_header_space), field('name', $.cell_marker_name))),
+      repeat($._trailing_header_space),
     ),
-
+    _leading_header_space: $ => choice($._header_space, $._uncertain_space),
+    _trailing_header_space: $ => choice($._trailing_space, $._uncertain_space),
     cell_marker_name: $ => seq(repeat1($._header_title_chunk), repeat(seq(
-      repeat1($._header_space), repeat1($._header_title_chunk),
+      repeat1(choice($._title_space, $._uncertain_space)), repeat1($._header_title_chunk),
     ))),
 
     // Magics, shell escapes, and help requests can only win where a statement
@@ -1313,7 +1316,7 @@ module.exports = grammar({
     )),
 
     comment: _ => token(seq('#', /[^\r\n]*/)),
-    _prefix_comment: $ => seq($._prefix_hash, repeat($._prefix_space), repeat($._comment_body_chunk), $._comment_end),
+    _prefix_comment: $ => seq(choice($._prefix_hash, $._comment_hash), repeat($._prefix_space), repeat($._comment_body_chunk), $._comment_end),
 
     line_continuation: _ => token(seq('\\', choice(seq(optional('\r'), '\n'), '\0'))),
 

@@ -55,6 +55,8 @@ Opaque bodies and marker prefixes, percent runs, header gaps, and titles continu
 
 The scanner serializes whether an opaque chunk ends at a line start. Resuming a middle chunk after an incremental edit does not seek backwards through a long line to determine its column.
 
+Short prefixes and title gaps are classified without grammar ambiguity; longer prefixes continue through bounded chunks. Comment termination leaves serialized state unchanged when it consumes no text, preserving reuse of later cells.
+
 ## Building
 
 ```sh

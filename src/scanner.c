@@ -19,10 +19,16 @@ enum TokenType {
     CLOSE_BRACE,
     EXCEPT,
     PREFIX_HASH,
+    MARKER_HASH,
+    COMMENT_HASH,
+    BODY_HASH,
     PREFIX_SPACE,
     PREFIX_PERCENT_START,
     PREFIX_PERCENT_MORE,
     HEADER_SPACE,
+    TITLE_SPACE,
+    TRAILING_SPACE,
+    UNCERTAIN_SPACE,
     MARKDOWN_CELL_TYPE,
     RAW_CELL_TYPE,
     CODE_CELL_TYPE,
@@ -128,13 +134,56 @@ static bool scan_chunk(TSLexer *lexer, enum TokenType type, uint32_t consumed, b
     return true;
 }
 
-static bool scan_prefix_hash(Scanner *scanner, TSLexer *lexer, bool line_start) {
-    if (lexer->lookahead != '#') return false;
-    scanner->marker_prefix = line_start && scanner->delimiters.size == 0 && scanner->indents.size == 1;
-    scanner->body_line_start = false;
+static bool scan_prefix_hash(Scanner *scanner, TSLexer *lexer, const bool *valid_symbols, bool line_start, bool body) {
+    if (lexer->lookahead != '#' || !line_start || scanner->delimiters.size || scanner->indents.size != 1) return false;
     advance(lexer);
     lexer->mark_end(lexer);
-    lexer->result_symbol = PREFIX_HASH;
+    uint32_t count = 1;
+    while (horizontal_space(lexer->lookahead) && count < CELL_CHUNK_LIMIT) {
+        advance(lexer);
+        ++count;
+    }
+    enum TokenType type = PREFIX_HASH;
+    bool possible_marker = true;
+    if (count < CELL_CHUNK_LIMIT) {
+        possible_marker = false;
+        type = body ? BODY_HASH : COMMENT_HASH;
+        if (lexer->lookahead == '%') {
+            advance(lexer);
+            ++count;
+            if (lexer->lookahead == '%') {
+                possible_marker = true;
+                type = MARKER_HASH;
+            } else if (count == CELL_CHUNK_LIMIT) {
+                possible_marker = true;
+                type = PREFIX_HASH;
+            }
+        }
+    }
+    if (!valid_symbols[type]) return false;
+    scanner->marker_prefix = possible_marker;
+    if (!possible_marker) scanner->cell_start = false;
+    scanner->body_line_start = false;
+    lexer->result_symbol = type;
+    return true;
+}
+
+static bool scan_header_space(TSLexer *lexer, const bool *valid_symbols) {
+    uint32_t count = 0;
+    while (horizontal_space(lexer->lookahead) && count < CELL_CHUNK_LIMIT) {
+        advance(lexer);
+        ++count;
+    }
+    if (!count) return false;
+    enum TokenType type;
+    if (horizontal_space(lexer->lookahead) && valid_symbols[UNCERTAIN_SPACE]) type = UNCERTAIN_SPACE;
+    else if ((lexer->eof(lexer) || lexer->lookahead == '\r' || lexer->lookahead == '\n') && valid_symbols[TRAILING_SPACE])
+        type = TRAILING_SPACE;
+    else if (valid_symbols[TITLE_SPACE]) type = TITLE_SPACE;
+    else if (valid_symbols[HEADER_SPACE]) type = HEADER_SPACE;
+    else return false;
+    lexer->mark_end(lexer);
+    lexer->result_symbol = type;
     return true;
 }
 
@@ -203,12 +252,12 @@ static bool scan_cell_magic(Scanner *scanner, TSLexer *lexer, const bool *valid_
     return true;
 }
 
-static bool scan_cell_body(Scanner *scanner, TSLexer *lexer) {
+static bool scan_cell_body(Scanner *scanner, TSLexer *lexer, const bool *valid_symbols) {
     uint32_t count = 0;
     bool line_start = scanner->body_line_start;
     while (!lexer->eof(lexer) && count < CELL_CHUNK_LIMIT) {
         if (line_start && lexer->lookahead == '#') {
-            if (!count) return scan_prefix_hash(scanner, lexer, true);
+            if (!count) return scan_prefix_hash(scanner, lexer, valid_symbols, true, true);
             break;
         }
         line_start = lexer->lookahead == '\r' || lexer->lookahead == '\n';
@@ -224,8 +273,14 @@ static bool scan_cell_body(Scanner *scanner, TSLexer *lexer) {
 }
 
 static bool scan_cell_tokens(Scanner *scanner, TSLexer *lexer, const bool *valid_symbols) {
-    if (valid_symbols[PREFIX_SPACE] && horizontal_space(lexer->lookahead))
-        return scan_chunk(lexer, PREFIX_SPACE, 0, true);
+    if (valid_symbols[PREFIX_SPACE] && horizontal_space(lexer->lookahead)) {
+        bool result = scan_chunk(lexer, PREFIX_SPACE, 0, true);
+        if (!horizontal_space(lexer->lookahead) && lexer->lookahead != '%') {
+            scanner->marker_prefix = false;
+            scanner->cell_start = false;
+        }
+        return result;
+    }
     if (valid_symbols[PREFIX_PERCENT_START] && scanner->marker_prefix && lexer->lookahead == '%') {
         advance(lexer);
         if (lexer->lookahead == '%') {
@@ -237,6 +292,7 @@ static bool scan_cell_tokens(Scanner *scanner, TSLexer *lexer, const bool *valid
             return true;
         }
         scanner->marker_prefix = false;
+        scanner->cell_start = false;
         if (valid_symbols[CELL_BODY_CHUNK]) return scan_chunk(lexer, CELL_BODY_CHUNK, 1, false);
         if (valid_symbols[COMMENT_BODY_CHUNK]) return scan_chunk(lexer, COMMENT_BODY_CHUNK, 1, false);
         return false;
@@ -246,6 +302,7 @@ static bool scan_cell_tokens(Scanner *scanner, TSLexer *lexer, const bool *valid
         advance(lexer);
         if (lexer->lookahead == '%') return false;
         scanner->marker_prefix = false;
+        scanner->cell_start = false;
         return scan_chunk(lexer, valid_symbols[CELL_BODY_CHUNK] ? CELL_BODY_CHUNK : COMMENT_BODY_CHUNK, 1, false);
     }
     if (valid_symbols[PREFIX_PERCENT_MORE] && lexer->lookahead == '%') {
@@ -258,8 +315,9 @@ static bool scan_cell_tokens(Scanner *scanner, TSLexer *lexer, const bool *valid
         lexer->result_symbol = PREFIX_PERCENT_MORE;
         return true;
     }
-    if (valid_symbols[HEADER_SPACE] && horizontal_space(lexer->lookahead))
-        return scan_chunk(lexer, HEADER_SPACE, 0, true);
+    if ((valid_symbols[HEADER_SPACE] || valid_symbols[TITLE_SPACE] || valid_symbols[TRAILING_SPACE] ||
+         valid_symbols[UNCERTAIN_SPACE]) && horizontal_space(lexer->lookahead))
+        return scan_header_space(lexer, valid_symbols);
     if ((valid_symbols[MARKDOWN_CELL_TYPE] || valid_symbols[RAW_CELL_TYPE] || valid_symbols[CODE_CELL_TYPE]) &&
         lexer->lookahead == '[') return scan_header_type(lexer, valid_symbols);
     if (valid_symbols[HEADER_TITLE_CHUNK] && !horizontal_space(lexer->lookahead) &&
@@ -275,16 +333,17 @@ static bool scan_cell_tokens(Scanner *scanner, TSLexer *lexer, const bool *valid
         lexer->result_symbol = CELL_HEADER_END;
         return true;
     }
-    if (valid_symbols[CELL_BODY_CHUNK]) return scan_cell_body(scanner, lexer);
+    if (valid_symbols[CELL_BODY_CHUNK]) return scan_cell_body(scanner, lexer, valid_symbols);
     if (valid_symbols[COMMENT_END] &&
         (lexer->lookahead == '\r' || lexer->lookahead == '\n' || lexer->eof(lexer))) {
-        scanner->cell_start = false;
-        scanner->marker_prefix = false;
+        // A zero-width terminator must not change scanner state: the reuse
+        // cursor can already point at the following repeat subtree here.
         lexer->result_symbol = COMMENT_END;
         return true;
     }
     if (valid_symbols[COMMENT_BODY_CHUNK]) {
         scanner->marker_prefix = false;
+        scanner->cell_start = false;
         return scan_chunk(lexer, COMMENT_BODY_CHUNK, 0, false);
     }
     return false;
@@ -294,8 +353,8 @@ bool tree_sitter_ipython_external_scanner_scan(void *payload, TSLexer *lexer, co
     Scanner *scanner = (Scanner *)payload;
     bool error_recovery_mode = valid_symbols[STRING_CONTENT] && valid_symbols[INDENT];
     if (!error_recovery_mode && scan_cell_tokens(scanner, lexer, valid_symbols)) return true;
-    if (!error_recovery_mode && valid_symbols[PREFIX_HASH] && lexer->lookahead == '#')
-        return scan_prefix_hash(scanner, lexer, lexer->get_column(lexer) == 0);
+    if (!error_recovery_mode && (valid_symbols[PREFIX_HASH] || valid_symbols[MARKER_HASH] || valid_symbols[COMMENT_HASH]) && lexer->lookahead == '#')
+        return scan_prefix_hash(scanner, lexer, valid_symbols, lexer->get_column(lexer) == 0, false);
     if (!error_recovery_mode && (valid_symbols[PYTHON_CELL_MAGIC] || valid_symbols[FOREIGN_CELL_MAGIC]) &&
         lexer->lookahead == '%') return scan_cell_magic(scanner, lexer, valid_symbols);
 
@@ -431,7 +490,9 @@ bool tree_sitter_ipython_external_scanner_scan(void *payload, TSLexer *lexer, co
             indent_length += 8;
             skip(lexer);
         } else if (lexer->lookahead == '#' && indent_length == 0 && scanner->delimiters.size == 0 &&
-                   valid_symbols[PREFIX_HASH]) {
+                   ((found_end_of_line && !within_brackets && scanner->indents.size == 1 &&
+                     valid_symbols[NEWLINE] && !valid_symbols[INDENT]) || valid_symbols[PREFIX_HASH] ||
+                    valid_symbols[MARKER_HASH] || valid_symbols[COMMENT_HASH])) {
             break;
         } else if (lexer->lookahead == '#' && (valid_symbols[INDENT] || valid_symbols[DEDENT] ||
                                                valid_symbols[NEWLINE] || valid_symbols[EXCEPT])) {
@@ -504,8 +565,8 @@ bool tree_sitter_ipython_external_scanner_scan(void *payload, TSLexer *lexer, co
         }
     }
 
-    if (!error_recovery_mode && valid_symbols[PREFIX_HASH] && lexer->lookahead == '#')
-        return scan_prefix_hash(scanner, lexer, lexer->get_column(lexer) == 0);
+    if (!error_recovery_mode && (valid_symbols[PREFIX_HASH] || valid_symbols[MARKER_HASH] || valid_symbols[COMMENT_HASH]) && lexer->lookahead == '#')
+        return scan_prefix_hash(scanner, lexer, valid_symbols, lexer->get_column(lexer) == 0, false);
     if (!error_recovery_mode && lexer->lookahead == '%' &&
         (valid_symbols[PYTHON_CELL_MAGIC] || valid_symbols[FOREIGN_CELL_MAGIC])) {
         return scan_cell_magic(scanner, lexer, valid_symbols);

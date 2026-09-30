@@ -217,6 +217,44 @@ test('comment-first code cells and Python magic bodies retain comments at every 
   }
 });
 
+test('one RHS edit reuses untouched comment bodies and marker suffixes', () => {
+  const source = Array.from(
+    { length: 100 },
+    (_, index) => `# %% Cell ${index}\nvalue_${index} = 1\n# ${'x'.repeat(10386)}\n`,
+  ).join('\n');
+  const index = source.indexOf('value_50 = 1') + 'value_50 = '.length;
+  const column = 'value_50 = '.length;
+  for (const replacement of ['2', 'x']) {
+    const { parser, tree } = parse(source);
+    tree.edit({
+      startIndex: index,
+      oldEndIndex: index + 1,
+      newEndIndex: index + 1,
+      startPosition: { row: 201, column },
+      oldEndPosition: { row: 201, column: column + 1 },
+      newEndPosition: { row: 201, column: column + 1 },
+    });
+    const events = {};
+    parser.setLogger((message) => {
+      events[message] = (events[message] ?? 0) + 1;
+    });
+    const edited = parser.parse(
+      source.slice(0, index) + replacement + source.slice(index + 1),
+      tree,
+    );
+    parser.setLogger(null);
+    assert.strictEqual(edited.rootNode.hasError, false);
+    assert.strictEqual(edited.rootNode.descendantsOfType('cell_marker').length, 100);
+    assert.ok(
+      (events.consume ?? 0) + (events.skip ?? 0) < source.length / 20,
+      'An edit must not lex the following half-megabyte of untouched comments',
+    );
+    assert.strictEqual(events.reusable_node_has_different_external_scanner_state ?? 0, 0);
+    assert.strictEqual(events.detect_error ?? 0, 0);
+    assert.ok(events.reuse_node > 100);
+  }
+});
+
 test('opaque chunks preserve Unicode and oversized nonmarker prefixes', () => {
   for (const body of [
     'x'.repeat(1024 * 1024),
