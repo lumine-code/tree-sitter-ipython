@@ -50,10 +50,16 @@ function fixture(name, size) {
     const row = `  "value": "${'x'.repeat(64)}",\n`;
     payload = row.repeat(Math.ceil(size / row.length));
     suffix = '}\nresult = len(values)\n';
-  } else if (name === 'code-comments') {
+  } else if (name === 'code-comments' || name === 'code-comment-run') {
     prefix = 'def work(value):\n    return value + 1\n';
     const row = `# ${'x'.repeat(77)}\n`;
-    payload = row.repeat(Math.ceil(size / row.length));
+    // Bound ordinary indentation lookahead without changing either parser's
+    // input. An unbroken run is retained separately as a baseline pathology.
+    const block = `${row.repeat(16)}chunk_value = 1\n`;
+    payload =
+      name === 'code-comments'
+        ? block.repeat(Math.ceil(size / block.length))
+        : row.repeat(Math.ceil(size / row.length));
     suffix = '\nresult = work(1)\n';
   } else {
     opaque = true;
@@ -309,14 +315,24 @@ for (const item of fixtures) {
   ).map((variant) => {
     const parser = new Parser();
     parser.setLanguage(variant.language);
+    fs.writeSync(
+      2,
+      `phase=proof-parse-start variant=${variant.name} fixture=${item.name} size=${item.size}\n`,
+    );
+    const parseStarted = performance.now();
     let tree = parser.parse(item.source);
+    const setupParseMs = performance.now() - parseStarted;
+    fs.writeSync(2, `phase=proof-parse-done variant=${variant.name} ms=${setupParseMs}\n`);
     validate(tree, item);
+    const proofStarted = performance.now();
     const value = astDigest(tree, item.source);
+    const setupProofMs = performance.now() - proofStarted;
+    fs.writeSync(2, `phase=proof-done variant=${variant.name} ms=${setupProofMs}\n`);
     releaseTree(tree);
     // eslint-disable-next-line no-useless-assignment -- Release native trees before unmeasured GC.
     tree = null;
     global.gc();
-    return { variant: variant.name, ...value };
+    return { variant: variant.name, ...value, setupParseMs, setupProofMs };
   });
   if (!item.opaque)
     assert.equal(proofs[0].sha256, proofs[1].sha256, `${item.name} sampled visible AST changed`);
