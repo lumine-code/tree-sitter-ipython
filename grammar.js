@@ -84,6 +84,8 @@ module.exports = grammar({
     $._string_content,
     $.escape_interpolation,
     $.string_end,
+    $.comment,
+    $.line_continuation,
 
     // Allow the external scanner to check for the validity of closing brackets
     // so that it can avoid returning dedent tokens between brackets.
@@ -91,6 +93,9 @@ module.exports = grammar({
     ')',
     '}',
     'except',
+    '(',
+    '[',
+    '{',
     $._prefix_hash,
     $._marker_hash,
     $._comment_hash,
@@ -1317,6 +1322,7 @@ module.exports = grammar({
 
     comment: _ => token(seq('#', /[^\r\n]*/)),
     _prefix_comment: $ => seq(choice($._prefix_hash, $._comment_hash), repeat($._prefix_space), repeat($._comment_body_chunk), $._comment_end),
+
 
     line_continuation: _ => token(seq('\\', choice(seq(optional('\r'), '\n'), '\0'))),
 

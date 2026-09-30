@@ -7284,6 +7284,14 @@
       "name": "string_end"
     },
     {
+      "type": "SYMBOL",
+      "name": "comment"
+    },
+    {
+      "type": "SYMBOL",
+      "name": "line_continuation"
+    },
+    {
       "type": "STRING",
       "value": "]"
     },
@@ -7298,6 +7306,18 @@
     {
       "type": "STRING",
       "value": "except"
+    },
+    {
+      "type": "STRING",
+      "value": "("
+    },
+    {
+      "type": "STRING",
+      "value": "["
+    },
+    {
+      "type": "STRING",
+      "value": "{"
     },
     {
       "type": "SYMBOL",

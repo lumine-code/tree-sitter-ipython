@@ -51,11 +51,11 @@ echo hello
 
 `cell_magic` exposes `name`, optional `arguments`, and optional `body`. It must be the first nonblank line in its code cell; a preceding comment or Python statement prevents a cell magic. `time`, `timeit`, `prun`, `debug`, `capture`, and `code_wrap` use `python_cell_body` with ordinary Python nodes. Other names use opaque `cell_body`; the editor chooses an embedded language without changing execution. Ordinary Python outside these wrappers keeps its upstream tree shape.
 
-Opaque bodies and marker prefixes, percent runs, header gaps, and titles continue through hidden leaves that consume at most 4096 Unicode code points per scanner call. There is no marker-length limit. Hidden chunks do not create a public node per line. Column-zero top-level comments retain their original visible nodes, text, parents and positions; their ancillary `isExtra` flag is false because the bounded prefix is resolved by an explicit comment rule. Inline, indented and bracketed comments remain extras. Insertion or deletion in a very long line can still require reparsing several chunks.
+Opaque bodies and marker prefixes, percent runs, header gaps, and titles continue through hidden leaves that consume at most 4096 Unicode code points per scanner call. There is no marker-length limit. Hidden chunks do not create a public node per line. Top-level comments retain their original visible nodes, text, parents and positions; their ancillary `isExtra` flag is false because the bounded prefix is resolved by an explicit comment rule. Inline comments and comments in nested suites or brackets remain extras. Insertion or deletion in a very long line can still require reparsing several chunks.
 
 The scanner serializes whether an opaque chunk ends at a line start. Resuming a middle chunk after an incremental edit does not seek backwards through a long line to determine its column.
 
-Short prefixes and title gaps are classified without grammar ambiguity; longer prefixes continue through bounded chunks. Comment termination leaves serialized state unchanged when it consumes no text, preserving reuse of later cells.
+Short prefixes and title gaps are classified without grammar ambiguity; longer prefixes continue through bounded chunks. Comment termination leaves serialized state unchanged when it consumes no text, preserving reuse of later cells. Bracket and explicit continuation context is serialized separately; a reserved marker after a noncontinued incomplete assignment starts a new cell and leaves the preceding code erroneous.
 
 ## Building
 

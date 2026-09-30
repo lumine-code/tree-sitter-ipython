@@ -194,6 +194,8 @@ test('cell magics only consume the first nonblank line of a code cell', () => {
   for (const source of [
     'value = 1\n%%bash\necho hello\n',
     '# comment\n%%bash\necho hello\n',
+    ' # comment\n%%bash\necho hello\n',
+    '\t# comment\n%%bash\necho hello\n',
     'if ready:\n    %%bash\n    echo hello\n',
   ]) {
     assert.strictEqual(parse(source).tree.rootNode.hasError, true, source);
@@ -379,4 +381,97 @@ test('partial prefixes and fenced Markdown preserve reserved marker semantics', 
   );
   assert.strictEqual(tree.rootNode.namedChild(0).childForFieldName('body').text, '```python\n');
   assert.strictEqual(tree.rootNode.namedChild(1).childForFieldName('body').text, 'payload');
+});
+
+test('reserved typed markers recover after a noncontinued incomplete assignment', () => {
+  for (const ending of ['\n', '\r\n']) {
+    for (const spacing of [' ', ' '.repeat(10000)]) {
+      const { tree } = parse(
+        `value =${ending}#${spacing}%% [raw]${ending}payload${ending}# %% [markdown]${ending}# heading`,
+      );
+      assert.strictEqual(tree.rootNode.hasError, true);
+      const cells = tree.rootNode.namedChildren.filter((node) =>
+        ['raw_cell', 'markdown_cell'].includes(node.type),
+      );
+      assert.deepStrictEqual(
+        cells.map((node) => node.type),
+        ['raw_cell', 'markdown_cell'],
+      );
+      assert.strictEqual(cells[0].childForFieldName('body').text, `payload${ending}`);
+      assert.strictEqual(cells[1].childForFieldName('body').text, '# heading');
+    }
+  }
+  const { tree } = parse(
+    '# %% Broken\nvalue =\n# %% [markdown]\n# Heading\n# %% [raw]\nraw <bytes>\n# %% [code]\ngood = 1\n',
+  );
+  assert.strictEqual(tree.rootNode.hasError, true);
+  assert.deepStrictEqual(
+    tree.rootNode.namedChildren
+      .filter((node) => ['cell_marker', 'markdown_cell', 'raw_cell'].includes(node.type))
+      .map((node) => node.type),
+    ['cell_marker', 'markdown_cell', 'raw_cell', 'cell_marker'],
+  );
+  assert.strictEqual(tree.rootNode.namedChildren.at(-1).childForFieldName('left').text, 'good');
+});
+
+test('actual brackets, backslash continuation and strings protect marker-looking comments', () => {
+  for (const source of [
+    'value = [\n# %% [raw]\n1,\n# %% [markdown]\n2]\n',
+    'value = (\n# %% [raw]\n1\n)\n',
+    'value = {\n# %% [raw]\n"x": 1\n}\n',
+    'value = """\n# %% [raw]\npayload\n# %% [markdown]\nheading\n"""\n',
+  ]) {
+    const { tree } = parse(source);
+    assert.strictEqual(tree.rootNode.hasError, false);
+    assert.strictEqual(tree.rootNode.descendantsOfType('raw_cell').length, 0);
+    assert.strictEqual(tree.rootNode.descendantsOfType('markdown_cell').length, 0);
+  }
+  const { tree } = parse('value = \\\n# %% [raw]\npayload\n# %% [markdown]\n# heading');
+  assert.strictEqual(tree.rootNode.descendantsOfType('raw_cell').length, 0);
+  assert.strictEqual(tree.rootNode.namedChildren.at(-1).type, 'markdown_cell');
+  for (const source of ['!echo first\n%%bash\necho later', 'value = 1\n%%bash\necho later'])
+    assert.strictEqual(parse(source).tree.rootNode.hasError, true);
+});
+
+test('uncommenting and changing header types preserve untouched suffix reuse', () => {
+  const original = Array.from(
+    { length: 20 },
+    (_, index) => `# %% Cell ${index}\n# ${'x'.repeat(10000)}\n`,
+  ).join('\n');
+  for (const operation of ['shell', 'code', 'raw', 'markdown']) {
+    const { parser, tree } = parse(original);
+    const headerIndex = original.indexOf('# %% Cell 10');
+    const commentIndex = headerIndex + '# %% Cell 10\n'.length;
+    const index = ['shell', 'code'].includes(operation) ? commentIndex : headerIndex;
+    const oldText = operation === 'shell' ? '#' : operation === 'code' ? '# ' : '# %% Cell 10';
+    const replacement =
+      operation === 'shell' ? '!' : operation === 'code' ? '' : `# %% [${operation}] Cell 10`;
+    const before = original.slice(0, index);
+    const row = before.split('\n').length - 1;
+    const column = index - before.lastIndexOf('\n') - 1;
+    tree.edit({
+      startIndex: index,
+      oldEndIndex: index + oldText.length,
+      newEndIndex: index + replacement.length,
+      startPosition: { row, column },
+      oldEndPosition: { row, column: column + oldText.length },
+      newEndPosition: { row, column: column + replacement.length },
+    });
+    const events = {};
+    parser.setLogger((message) => {
+      events[message] = (events[message] ?? 0) + 1;
+    });
+    const edited = parser.parse(
+      original.slice(0, index) + replacement + original.slice(index + oldText.length),
+      tree,
+    );
+    parser.setLogger(null);
+    assert.strictEqual(edited.rootNode.hasError, false, operation);
+    assert.strictEqual(edited.rootNode.descendantsOfType('cell_marker').length, 20, operation);
+    assert.ok(
+      (events.consume ?? 0) + (events.skip ?? 0) < 20000,
+      `${operation} must only lex the changed body and its boundary`,
+    );
+    assert.strictEqual(events.detect_error ?? 0, 0, operation);
+  }
 });
