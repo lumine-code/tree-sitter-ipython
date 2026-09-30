@@ -211,3 +211,58 @@ payload
       (cell_marker_marker)
       (cell_marker_metadata))
     (cell_body)))
+
+================================================================================
+Legacy navigation annotations preserve compact marker fields and comments
+================================================================================
+
+#%%$# Parent
+#%%$$#
+#%%$$# Child
+#%%$$p!_<;# Full  title
+#%%$$v+<# Values
+#%%?# Automatic
+#$$p# Plain annotation
+defined = 1 #$$v+<# Inline variable
+class Model: #$$p!_<;# Class annotation
+    pass
+def work(): #$$p# Function annotation
+    pass
+
+--------------------------------------------------------------------------------
+
+(module
+  (cell_marker
+    marker: (cell_marker_marker)
+    name: (cell_marker_name))
+  (cell_marker
+    marker: (cell_marker_marker)
+    name: (cell_marker_name))
+  (cell_marker
+    marker: (cell_marker_marker)
+    name: (cell_marker_name))
+  (cell_marker
+    marker: (cell_marker_marker)
+    name: (cell_marker_name))
+  (cell_marker
+    marker: (cell_marker_marker)
+    name: (cell_marker_name))
+  (cell_marker
+    marker: (cell_marker_marker)
+    name: (cell_marker_name))
+  (comment)
+  (assignment
+    left: (identifier)
+    right: (integer))
+  (comment)
+  (class_definition
+    name: (identifier)
+    (comment)
+    body: (block
+      (pass_statement)))
+  (function_definition
+    name: (identifier)
+    parameters: (parameters)
+    (comment)
+    body: (block
+      (pass_statement))))

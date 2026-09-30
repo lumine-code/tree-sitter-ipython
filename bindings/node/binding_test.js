@@ -26,6 +26,79 @@ test('exposes a cell marker level and title separately', () => {
   assert.strictEqual(marker.childForFieldName('metadata'), null);
 });
 
+test('preserves compact legacy navigation annotations, titles and flags', () => {
+  const lines = [
+    '#%%$# Parent',
+    '#%%$$#',
+    '#%%$$# Child',
+    '#%%$$p!_<;# Full  title',
+    '#%%$$v+<# Values',
+    '#%%?# Automatic',
+    '#$$p# Plain annotation',
+    'defined = 1 #$$v+<# Inline variable',
+    'class Model: #$$p!_<;# Class annotation',
+    '    pass',
+    'def work(): #$$p# Function annotation',
+    '    pass',
+  ];
+  const names = [
+    '$# Parent',
+    '$$#',
+    '$$# Child',
+    '$$p!_<;# Full  title',
+    '$$v+<# Values',
+    '?# Automatic',
+  ];
+  for (const ending of ['\n', '\r\n']) {
+    const { tree } = parse(lines.join(ending) + ending);
+    assert.strictEqual(tree.rootNode.hasError, false);
+    const markers = tree.rootNode.descendantsOfType('cell_marker');
+    assert.deepStrictEqual(
+      markers.map((node) => node.text),
+      lines.slice(0, names.length),
+    );
+    assert.deepStrictEqual(
+      markers.map((node) => node.childForFieldName('marker').text),
+      names.map(() => '#%%'),
+    );
+    assert.deepStrictEqual(
+      markers.map((node) => node.childForFieldName('name').text),
+      names,
+    );
+    assert.deepStrictEqual(
+      markers.map((node) => node.childForFieldName('metadata')),
+      names.map(() => null),
+    );
+    assert.deepStrictEqual(
+      markers.map((node) => node.startPosition),
+      names.map((_, row) => ({ row, column: 0 })),
+    );
+    assert.deepStrictEqual(
+      markers.map((node) => node.childForFieldName('name').startPosition),
+      names.map((_, row) => ({ row, column: 3 })),
+    );
+    const comments = tree.rootNode.descendantsOfType('comment');
+    assert.deepStrictEqual(
+      comments.map((node) => node.text),
+      [
+        '#$$p# Plain annotation',
+        '#$$v+<# Inline variable',
+        '#$$p!_<;# Class annotation',
+        '#$$p# Function annotation',
+      ],
+    );
+    assert.deepStrictEqual(
+      comments.map((node) => node.startPosition),
+      [
+        { row: 6, column: 0 },
+        { row: 7, column: 12 },
+        { row: 8, column: 13 },
+        { row: 10, column: 12 },
+      ],
+    );
+  }
+});
+
 test('excludes CRLF line endings from comment text and end positions', () => {
   const parser = new Parser();
   parser.setLanguage(require('.'));
