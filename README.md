@@ -32,7 +32,7 @@ parser.setLanguage(IPython);
 const tree = parser.parse('%matplotlib inline\nvalue = 1\n');
 ```
 
-Markers must start in column zero. `[markdown]`, `[md]`, `[raw]`, and the legacy bare `markdown`, `md`, and `raw` select the cell type; metadata is case-sensitive and must be the first complete word after the percent run. Every additional `%` is a navigation level. Other words are code-cell titles. Markers inside Python strings, brackets, continued expressions, or indented blocks remain Python content.
+Markers must start in column zero. `[markdown]`, `[md]`, and `[raw]` select the cell type; `[code]` explicitly selects code; metadata is case-sensitive and must be the first complete word after the percent run. Every additional `%` is a navigation level. Bare `markdown`, `md`, `raw`, and other words are code-cell titles. Markers inside Python strings, brackets, continued expressions, or indented blocks remain Python content.
 
 ```ipy
 # %% Setup
@@ -51,7 +51,7 @@ echo hello
 
 `cell_magic` exposes `name`, optional `arguments`, and optional `body`. It must be the first nonblank line in its code cell; a preceding comment or Python statement prevents a cell magic. `time`, `timeit`, `prun`, `debug`, `capture`, and `code_wrap` use `python_cell_body` with ordinary Python nodes. Other names use opaque `cell_body`; the editor chooses an embedded language without changing execution. Ordinary Python outside these wrappers keeps its upstream tree shape.
 
-Opaque body leaves consume at most 4096 Unicode code points per scanner call, including speculative marker lookahead. Recognition of the `#` and whitespace before the first two `%` characters has the same bound; a longer prefix remains body text. Hidden chunks do not create a public node per line. Insertion or deletion in a very long line can still require reparsing several chunks.
+Opaque bodies and marker prefixes, percent runs, header gaps, and titles continue through hidden leaves that consume at most 4096 Unicode code points per scanner call. There is no marker-length limit. Hidden chunks do not create a public node per line. Column-zero top-level comments retain their original visible nodes, text, parents and positions; their ancillary `isExtra` flag is false because the bounded prefix is resolved by an explicit comment rule. Inline, indented and bracketed comments remain extras. Insertion or deletion in a very long line can still require reparsing several chunks.
 
 The scanner serializes whether an opaque chunk ends at a line start. Resuming a middle chunk after an incremental edit does not seek backwards through a long line to determine its column.
 

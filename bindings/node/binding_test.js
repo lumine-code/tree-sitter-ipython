@@ -46,6 +46,29 @@ test('excludes CRLF line endings from comment text and end positions', () => {
   );
 });
 
+test('bounded top-level comments preserve visible AST and distinguish ancillary extra flags', () => {
+  const { tree } = parse('# top\nx = 1 # inline\nif x:\n    # nested\n    y = (\n# bracket\n1)\n');
+  assert.strictEqual(tree.rootNode.hasError, false);
+  const comments = tree.rootNode.descendantsOfType('comment');
+  assert.deepStrictEqual(
+    comments.map((node) => node.text),
+    ['# top', '# inline', '# nested', '# bracket'],
+  );
+  assert.deepStrictEqual(
+    comments.map((node) => node.isExtra),
+    [false, true, true, true],
+  );
+  assert.deepStrictEqual(
+    comments.map((node) => node.startPosition),
+    [
+      { row: 0, column: 0 },
+      { row: 1, column: 6 },
+      { row: 3, column: 4 },
+      { row: 5, column: 0 },
+    ],
+  );
+});
+
 test('excludes CRLF line endings from format specifier text and end positions', () => {
   const parser = new Parser();
   parser.setLanguage(require('.'));
@@ -100,16 +123,7 @@ test('header trailing whitespace cannot consume the first body line', () => {
 });
 
 test('classifies exact marker metadata and keeps titles separate', () => {
-  const headers = [
-    '[markdown]',
-    '[md]',
-    'markdown',
-    'md',
-    '[raw]',
-    'raw',
-    'markdownish',
-    '[notes]',
-  ];
+  const headers = ['[markdown]', '[md]', 'markdown', 'md', '[raw]', 'raw', '[code]', '[notes]'];
   const { tree } = parse(headers.map((metadata) => `# %%% ${metadata} Title\n`).join(''));
   assert.strictEqual(tree.rootNode.hasError, false);
   assert.deepStrictEqual(
@@ -117,18 +131,26 @@ test('classifies exact marker metadata and keeps titles separate', () => {
     [
       'markdown_cell',
       'markdown_cell',
-      'markdown_cell',
-      'markdown_cell',
+      'cell_marker',
+      'cell_marker',
       'raw_cell',
-      'raw_cell',
+      'cell_marker',
       'cell_marker',
       'cell_marker',
     ],
   );
-  for (const node of tree.rootNode.namedChildren.slice(0, 6)) {
-    const marker = node.childForFieldName('marker');
+  for (const [index, node] of tree.rootNode.namedChildren.entries()) {
+    const marker = node.type === 'cell_marker' ? node : node.childForFieldName('marker');
+    const typed = [0, 1, 4, 6].includes(index);
     assert.strictEqual(marker.childForFieldName('marker').text, '# %%%');
-    assert.strictEqual(marker.childForFieldName('name').text, 'Title');
+    assert.strictEqual(
+      marker.childForFieldName('metadata')?.text ?? null,
+      typed ? headers[index] : null,
+    );
+    assert.strictEqual(
+      marker.childForFieldName('name').text,
+      typed ? 'Title' : `${headers[index]} Title`,
+    );
   }
 });
 
@@ -253,4 +275,53 @@ test('chunk boundaries preserve CRLF and the next real marker', () => {
   assert.strictEqual(tree.rootNode.namedChild(0).childForFieldName('body').text, body);
   assert.strictEqual(tree.rootNode.namedChild(1).childForFieldName('name').text, 'Next');
   assert.strictEqual(tree.rootNode.namedChild(2).type, 'assignment');
+});
+
+test('long prefixes, percent hierarchy and header gaps retain exact fields', () => {
+  const spacing = ' '.repeat(10000);
+  for (const before of ['value = 0\n', '# %% [raw]\nbody\n']) {
+    for (const prefix of [`#${spacing}%%`, `# ${'%'.repeat(10000)}`]) {
+      for (const metadata of ['[raw]', '[markdown]', '[code]']) {
+        const header = `${prefix}${spacing}${metadata}${spacing}Long${spacing}Title${spacing}`;
+        const { tree } = parse(`${before}${header}\r\nvalue = 1\r\n# %% Next\r\nafter = 2\r\n`);
+        assert.strictEqual(tree.rootNode.hasError, false);
+        const node = tree.rootNode.namedChild(1);
+        const marker = node.type === 'cell_marker' ? node : node.childForFieldName('marker');
+        assert.strictEqual(marker.childForFieldName('marker').text, prefix);
+        assert.strictEqual(marker.childForFieldName('metadata').text, metadata);
+        assert.strictEqual(marker.childForFieldName('name').text, `Long${spacing}Title`);
+        assert.strictEqual(marker.text, header);
+        assert.strictEqual(marker.startIndex, before.length);
+        assert.strictEqual(marker.endIndex, before.length + header.length);
+        if (metadata !== '[code]') {
+          assert.strictEqual(node.childForFieldName('body').text, 'value = 1\r\n');
+          assert.strictEqual(node.namedChildren.length, 2);
+        }
+        assert.strictEqual(
+          tree.rootNode.namedChildren.at(-1).childForFieldName('left').text,
+          'after',
+        );
+      }
+    }
+  }
+});
+
+test('partial prefixes and fenced Markdown preserve reserved marker semantics', () => {
+  for (const body of [
+    `#${' '.repeat(10000)}`,
+    `#${' '.repeat(10000)}% text`,
+    `# x${'x'.repeat(10000)}%% text`,
+  ]) {
+    const { tree } = parse(`# %% [raw]\n${body}`);
+    assert.strictEqual(tree.rootNode.hasError, false);
+    assert.strictEqual(tree.rootNode.namedChild(0).childForFieldName('body').text, body);
+  }
+  const { tree } = parse('# %% [markdown]\n```python\n# %% [raw]\npayload');
+  assert.strictEqual(tree.rootNode.hasError, false);
+  assert.deepStrictEqual(
+    tree.rootNode.namedChildren.map((node) => node.type),
+    ['markdown_cell', 'raw_cell'],
+  );
+  assert.strictEqual(tree.rootNode.namedChild(0).childForFieldName('body').text, '```python\n');
+  assert.strictEqual(tree.rootNode.namedChild(1).childForFieldName('body').text, 'payload');
 });

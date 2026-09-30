@@ -1097,6 +1097,16 @@
     }
   },
   {
+    "type": "cell_marker_marker",
+    "named": true,
+    "fields": {}
+  },
+  {
+    "type": "cell_marker_name",
+    "named": true,
+    "fields": {}
+  },
+  {
     "type": "chevron",
     "named": true,
     "fields": {},
@@ -1175,6 +1185,12 @@
         }
       ]
     }
+  },
+  {
+    "type": "comment",
+    "named": true,
+    "extra": true,
+    "fields": {}
   },
   {
     "type": "comparison_operator",
@@ -2597,6 +2613,10 @@
           "named": true
         },
         {
+          "type": "comment",
+          "named": true
+        },
+        {
           "type": "continue_statement",
           "named": true
         },
@@ -2925,6 +2945,10 @@
         },
         {
           "type": "class_definition",
+          "named": true
+        },
+        {
+          "type": "comment",
           "named": true
         },
         {
@@ -4011,25 +4035,12 @@
     "named": true
   },
   {
-    "type": "cell_marker_marker",
-    "named": true
-  },
-  {
     "type": "cell_marker_metadata",
-    "named": true
-  },
-  {
-    "type": "cell_marker_name",
     "named": true
   },
   {
     "type": "class",
     "named": false
-  },
-  {
-    "type": "comment",
-    "named": true,
-    "extra": true
   },
   {
     "type": "continue",

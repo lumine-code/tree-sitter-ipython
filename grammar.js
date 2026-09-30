@@ -46,6 +46,16 @@ module.exports = grammar({
   ],
 
   conflicts: $ => [
+    [$.markdown_cell],
+    [$.raw_cell],
+    [$.cell_magic],
+    [$.cell_body],
+    [$._code_cell_content],
+    [$.python_cell_body],
+    [$.cell_marker_name],
+    [$.cell_marker],
+    [$._markdown_cell_header],
+    [$._raw_cell_header],
     [$.primary_expression, $.pattern],
     [$.primary_expression, $.list_splat_pattern],
     [$.tuple, $.tuple_pattern],
@@ -76,22 +86,23 @@ module.exports = grammar({
     $.escape_interpolation,
     $.string_end,
 
-    // Mark comments as external tokens so that the external scanner is always
-    // invoked, even if no external token is expected. This allows for better
-    // error recovery, because the external scanner can maintain the overall
-    // structure by returning dedent tokens whenever a dedent occurs, even
-    // if no dedent is expected.
-    $.comment,
-
     // Allow the external scanner to check for the validity of closing brackets
     // so that it can avoid returning dedent tokens between brackets.
     ']',
     ')',
     '}',
     'except',
-    $._code_cell_marker,
-    $._markdown_cell_marker,
-    $._raw_cell_marker,
+    $._prefix_hash,
+    $._prefix_space,
+    $._prefix_percent_start,
+    $._prefix_percent_more,
+    $._header_space,
+    $._markdown_cell_type,
+    $._raw_cell_type,
+    $._code_cell_type,
+    $._header_title_chunk,
+    $._comment_body_chunk,
+    $._comment_end,
     $._python_cell_magic,
     $._foreign_cell_magic,
     $._cell_header_end,
@@ -132,7 +143,7 @@ module.exports = grammar({
       )),
     ),
 
-    _code_cell_content: $ => choice($.cell_magic, repeat1($._statement)),
+    _code_cell_content: $ => choice($.cell_magic, repeat1(choice($._statement, alias($._prefix_comment, $.comment)))),
 
     markdown_cell: $ => seq(
       field('marker', alias($._markdown_cell_header, $.cell_marker)),
@@ -148,20 +159,21 @@ module.exports = grammar({
 
     // Hidden bounded leaves keep incremental tokenization local without
     // exposing a node for every line to consumers or injection callbacks.
-    cell_body: $ => repeat1($._cell_body_chunk),
+    cell_body: $ => repeat1(choice($._cell_body_chunk, $._body_prefix)),
+    _body_prefix: $ => seq($._prefix_hash, repeat($._prefix_space)),
 
     cell_magic: $ => choice(
       seq(
         alias($._python_cell_magic, '%%'),
         field('name', $.cell_magic_name),
-        optional(seq(token.immediate(/[ \t]+/), field('arguments', $.cell_magic_arguments))),
+        optional(seq(repeat1($._header_space), optional(field('arguments', $.cell_magic_arguments)))),
         $._cell_header_end,
         optional(field('body', $.python_cell_body)),
       ),
       seq(
         alias($._foreign_cell_magic, '%%'),
         field('name', $.cell_magic_name),
-        optional(seq(token.immediate(/[ \t]+/), field('arguments', $.cell_magic_arguments))),
+        optional(seq(repeat1($._header_space), optional(field('arguments', $.cell_magic_arguments)))),
         $._cell_header_end,
         optional(field('body', $.cell_body)),
       ),
@@ -169,7 +181,7 @@ module.exports = grammar({
 
     cell_magic_name: _ => token.immediate(choice(/[a-zA-Z_][a-zA-Z_0-9]*/, '!')),
     cell_magic_arguments: _ => token.immediate(/[^\r\n]+/),
-    python_cell_body: $ => repeat1($._statement),
+    python_cell_body: $ => repeat1(choice($._statement, alias($._prefix_comment, $.comment))),
 
     _statement: $ => choice(
       $._simple_statements,
@@ -206,34 +218,43 @@ module.exports = grammar({
       $.help_statement,
     ),
 
-    // IPython additions are single-line statements. A cell marker has higher
-    // lexical precedence than a comment only where a statement may start, so
-    // inline `x # %%` text remains an ordinary Python comment.
-    cell_marker: $ => seq(
-      field('marker', alias($._code_cell_marker, $.cell_marker_marker)),
-      optional(token.immediate(/[ \t]+/)),
-      optional(field('name', $.cell_marker_name)),
+    // Shared bounded prefix leaves are resolved as a marker only once the
+    // percent terminal is found. No whitespace or outline-depth limit is imposed.
+    cell_marker_marker: $ => seq(
+      $._prefix_hash,
+      repeat($._prefix_space),
+      $._prefix_percent_start,
+      repeat($._prefix_percent_more),
+    ),
+
+    cell_marker: $ => choice(
+      seq(field('marker', $.cell_marker_marker), optional(seq(
+        repeat($._header_space), field('name', $.cell_marker_name),
+      )), repeat($._header_space)),
+      seq(field('marker', $.cell_marker_marker), repeat1($._header_space),
+        field('metadata', alias($._code_cell_type, $.cell_marker_metadata)),
+        optional(seq(repeat1($._header_space), optional(field('name', $.cell_marker_name)))), repeat($._header_space)),
     ),
 
     _markdown_cell_header: $ => seq(
-      field('marker', alias($._markdown_cell_marker, $.cell_marker_marker)),
-      token.immediate(/[ \t]+/),
-      field('metadata', $.cell_marker_metadata),
-      optional(seq(token.immediate(/[ \t]+/), field('name', $.cell_marker_name))),
+      field('marker', $.cell_marker_marker),
+      repeat1($._header_space),
+      field('metadata', alias($._markdown_cell_type, $.cell_marker_metadata)),
+      optional(seq(repeat1($._header_space), optional(field('name', $.cell_marker_name)))),
+      repeat($._header_space),
     ),
 
     _raw_cell_header: $ => seq(
-      field('marker', alias($._raw_cell_marker, $.cell_marker_marker)),
-      token.immediate(/[ \t]+/),
-      field('metadata', $.cell_marker_metadata),
-      optional(seq(token.immediate(/[ \t]+/), field('name', $.cell_marker_name))),
+      field('marker', $.cell_marker_marker),
+      repeat1($._header_space),
+      field('metadata', alias($._raw_cell_type, $.cell_marker_metadata)),
+      optional(seq(repeat1($._header_space), optional(field('name', $.cell_marker_name)))),
+      repeat($._header_space),
     ),
 
-    cell_marker_metadata: _ => token.immediate(prec(1, choice(
-      '[md]', '[markdown]', '[raw]', 'md', 'markdown', 'raw',
+    cell_marker_name: $ => seq(repeat1($._header_title_chunk), repeat(seq(
+      repeat1($._header_space), repeat1($._header_title_chunk),
     ))),
-
-    cell_marker_name: _ => token.immediate(/[^\s\r\n](?:[^\r\n]*[^\s\r\n])?/),
 
     // Magics, shell escapes, and help requests can only win where a statement
     // may start, so modulo, comparisons, and f-string conversions remain
@@ -1296,6 +1317,7 @@ module.exports = grammar({
     )),
 
     comment: _ => token(seq('#', /[^\r\n]*/)),
+    _prefix_comment: $ => seq($._prefix_hash, repeat($._prefix_space), repeat($._comment_body_chunk), $._comment_end),
 
     line_continuation: _ => token(seq('\\', choice(seq(optional('\r'), '\n'), '\0'))),
 

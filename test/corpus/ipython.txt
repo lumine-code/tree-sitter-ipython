@@ -61,20 +61,15 @@ IPython cell markers
   (cell_marker
     marker: (cell_marker_marker)
     name: (cell_marker_name))
-  (markdown_cell
-    marker: (cell_marker
-      marker: (cell_marker_marker)
-      metadata: (cell_marker_metadata)
-      name: (cell_marker_name)))
-  (markdown_cell
-    marker: (cell_marker
-      marker: (cell_marker_marker)
-      metadata: (cell_marker_metadata)))
-  (markdown_cell
-    marker: (cell_marker
-      marker: (cell_marker_marker)
-      metadata: (cell_marker_metadata)
-      name: (cell_marker_name)))
+  (cell_marker
+    marker: (cell_marker_marker)
+    name: (cell_marker_name))
+  (cell_marker
+    marker: (cell_marker_marker)
+    name: (cell_marker_name))
+  (cell_marker
+    marker: (cell_marker_marker)
+    name: (cell_marker_name))
   (cell_marker
     marker: (cell_marker_marker)
     name: (cell_marker_name))
