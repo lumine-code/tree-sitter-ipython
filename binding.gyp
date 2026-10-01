@@ -30,6 +30,13 @@
           ],
         }],
       ],
+    },
+    {
+      "target_name": "scanner_state_test",
+      "type": "executable",
+      "include_dirs": ["src"],
+      "sources": ["test/scanner-state-test.c"],
+      "conditions": [["OS!='win'", {"cflags_c": ["-std=c11"]}, {"cflags_c": ["/std:c11", "/utf-8"]}]],
     }
   ]
 }

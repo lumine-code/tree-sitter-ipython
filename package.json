@@ -29,6 +29,7 @@
     "grammar.js",
     "queries",
     "src",
+    "test/scanner-state-test.c",
     "tree-sitter.json",
     "binding.gyp"
   ],

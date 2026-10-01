@@ -438,7 +438,8 @@ unsigned tree_sitter_ipython_external_scanner_serialize(void *payload, char *buf
         (s->help_prefix << 8) | (s->suite_colon << 9) | (s->arguments_active << 10) | (s->conservative << 11);
     unsigned offset = 0; memcpy(buffer, &flags, 2); offset += 2;
     buffer[offset++] = s->header_kind; buffer[offset++] = s->recent_length;
-    buffer[offset++] = s->recent[0]; buffer[offset++] = s->recent[1];
+    buffer[offset++] = s->recent_length == 1 || s->recent_length == 2 ? s->recent[0] : 0;
+    buffer[offset++] = s->recent_length == 2 ? s->recent[1] : 0;
     offset = write_u32(buffer, offset, s->bracket_depth); offset = write_u32(buffer, offset, (uint32_t)s->previous);
     unsigned count_offset = offset; offset += 2; uint16_t count = 0;
     for (uint32_t i = 0; i < s->frames.size; i++) {
@@ -454,7 +455,7 @@ unsigned tree_sitter_ipython_external_scanner_serialize(void *payload, char *buf
 }
 void tree_sitter_ipython_external_scanner_deserialize(void *payload, const char *buffer, unsigned length) {
     Scanner *s = payload; s->frames.size = 0; s->bracket_depth = 0; s->previous = 0;
-    s->header_kind = HEADER_NONE; s->recent_length = 0;
+    s->header_kind = HEADER_NONE; s->recent_length = 0; s->recent[0] = s->recent[1] = 0;
     s->line_start = s->cell_start = s->statement_start = true;
     s->rhs_ready = s->comment_line = s->continued_line = s->marker_prefix = s->command_tail = false;
     s->help_prefix = s->suite_colon = s->arguments_active = s->conservative = false;

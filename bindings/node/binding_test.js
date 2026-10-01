@@ -4,6 +4,13 @@ const path = require('node:path');
 const { test } = require('node:test');
 const Parser = require('tree-sitter');
 const IPython = require('.');
+test('external scanner reset and inactive prefix bytes are canonical', () => {
+  const executable = path.resolve(
+    __dirname,
+    '../../build/Release/scanner_state_test' + (process.platform === 'win32' ? '.exe' : ''),
+  );
+  require('node:child_process').execFileSync(executable);
+});
 function parse(source, parser = new Parser(), oldTree) {
   parser.setLanguage(IPython);
   const tree = parser.parse(source, oldTree);
