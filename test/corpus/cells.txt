@@ -109,6 +109,62 @@ x=1 #$$v# Inline
     (python_cell_body)))
 
 ==================
+Compact navigation flag families remain code titles
+==================
+
+#%%
+#%%$#
+#%%$$p#
+#%%$$s*_<;# String
+#%%$$v+<;_# Variable
+#%%$$1-;_<# First
+#%%$$P!# Uppercase
+#%%?_<;# (2, 'Named')
+#%%$# [markdown] stays a title
+value=1
+
+---
+
+(module
+  (code_cell)
+  (code_cell
+    (cell_marker
+      (cell_marker_marker)))
+  (code_cell
+    (cell_marker
+      (cell_marker_marker)
+      (cell_marker_name)))
+  (code_cell
+    (cell_marker
+      (cell_marker_marker)
+      (cell_marker_name)))
+  (code_cell
+    (cell_marker
+      (cell_marker_marker)
+      (cell_marker_name)))
+  (code_cell
+    (cell_marker
+      (cell_marker_marker)
+      (cell_marker_name)))
+  (code_cell
+    (cell_marker
+      (cell_marker_marker)
+      (cell_marker_name)))
+  (code_cell
+    (cell_marker
+      (cell_marker_marker)
+      (cell_marker_name)))
+  (code_cell
+    (cell_marker
+      (cell_marker_marker)
+      (cell_marker_name)))
+  (code_cell
+    (cell_marker
+      (cell_marker_marker)
+      (cell_marker_name))
+    (python_cell_body)))
+
+==================
 Literal fences end at reserved markers
 ==================
 

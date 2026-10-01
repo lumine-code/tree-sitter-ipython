@@ -82,6 +82,44 @@ test('preserves legacy navigation annotations and full flags as marker titles', 
   const body = tree.rootNode.namedChildren.at(-1).childForFieldName('body');
   assert.equal(body.text, '#$$p# Ordinary\nx=1 #$$v# Inline\n');
 });
+test('preserves every compact navigation flag family, nameless headers and CRLF field spans', () => {
+  const titles = [
+    null,
+    '$#',
+    '$$p#',
+    '$$s*_<;# String',
+    '$$v+<;_# Variable',
+    '$$1-;_<# First',
+    '$$P!# Uppercase',
+    '?_<;# (2, "Named")',
+    '$# [markdown] stays a title',
+  ];
+  const source = titles.map((title) => '#%%' + (title ?? '') + '\r\n').join('') + '#%%$$p#';
+  const { tree } = parse(source);
+  assert.deepEqual(markerNames(tree), [...titles, '$$p#']);
+  const markers = nodes(tree, 'cell_marker');
+  for (let index = 0; index < markers.length; ++index) {
+    const marker = markers[index],
+      prefix = marker.childForFieldName('marker');
+    assert.equal(prefix.text, '#%%');
+    assert.deepEqual(prefix.startPosition, { row: index, column: 0 });
+    assert.deepEqual(prefix.endPosition, { row: index, column: 3 });
+    assert.equal(marker.childForFieldName('metadata'), null);
+    const name = marker.childForFieldName('name');
+    if (name) {
+      assert.deepEqual(name.startPosition, { row: index, column: 3 });
+      assert.equal(name.text.includes('\r'), false);
+    }
+  }
+  assert.ok(tree.rootNode.namedChildren.every((cell) => cell.type === 'code_cell'));
+});
+test('keeps indented and code-prefixed navigation annotations inside Python bodies', () => {
+  const source = '#%% Root\n    #%%$$p# Indented\ndef work(): #%%$p# Inline\n    pass\n';
+  const { tree } = parse(source);
+  assert.deepEqual(markerNames(tree), ['Root']);
+  const body = tree.rootNode.namedChild(0).childForFieldName('body');
+  assert.equal(body.text, '    #%%$$p# Indented\ndef work(): #%%$p# Inline\n    pass\n');
+});
 test('continues unlimited marker prefixes, hierarchy and header whitespace', () => {
   const gap = ' '.repeat(10000),
     hierarchy = '%'.repeat(10000);
