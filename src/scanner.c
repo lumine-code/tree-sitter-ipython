@@ -1,812 +1,423 @@
 #include "tree_sitter/array.h"
 #include "tree_sitter/parser.h"
-
-#include <assert.h>
 #include <stdint.h>
-#include <stdio.h>
+#include <assert.h>
+#include <stdlib.h>
 #include <string.h>
 
 enum TokenType {
-    NEWLINE,
-    INDENT,
-    DEDENT,
-    STRING_START,
-    STRING_CONTENT,
-    ESCAPE_INTERPOLATION,
-    STRING_END,
-    COMMENT,
-    LINE_CONTINUATION,
-    CLOSE_BRACKET,
-    CLOSE_PAREN,
-    CLOSE_BRACE,
-    EXCEPT,
-    OPEN_PAREN,
-    OPEN_BRACKET,
-    OPEN_BRACE,
-    PREFIX_HASH,
-    MARKER_HASH,
-    COMMENT_HASH,
-    BODY_HASH,
-    PREFIX_SPACE,
-    PREFIX_PERCENT_START,
-    PREFIX_PERCENT_MORE,
-    HEADER_SPACE,
-    TITLE_SPACE,
-    TRAILING_SPACE,
-    UNCERTAIN_SPACE,
-    MARKDOWN_CELL_TYPE,
-    RAW_CELL_TYPE,
-    CODE_CELL_TYPE,
-    HEADER_TITLE_CHUNK,
-    COMMENT_BODY_CHUNK,
-    COMMENT_END,
-    PYTHON_CELL_MAGIC,
-    FOREIGN_CELL_MAGIC,
-    CELL_HEADER_END,
-    CELL_BODY_CHUNK,
+    PREFIX_HASH, BODY_HASH, PREFIX_SPACE, PREFIX_PERCENT_START, PREFIX_PERCENT_MORE,
+    HEADER_SPACE, TITLE_SPACE, TRAILING_SPACE, UNCERTAIN_SPACE,
+    MARKDOWN_CELL_TYPE, RAW_CELL_TYPE, CODE_CELL_TYPE, HEADER_TITLE_CHUNK, CELL_HEADER_END,
+    PYTHON_CELL_MAGIC, FOREIGN_CELL_MAGIC, MAGIC_NAME_CHUNK, ARGUMENTS_CHUNK,
+    PADDING_CHUNK, PYTHON_CHUNK, CELL_BODY_CHUNK,
+    MAGIC_STATEMENT_START, SHELL_STATEMENT_START, HELP_STATEMENT_START,
+    MAGIC_EXPRESSION_START, SHELL_EXPRESSION_START, COMMAND_TAIL, HELP_PREFIX_CHUNK, HELP_SUFFIX, DOCUMENT_END,
 };
+enum { QUOTE_SINGLE = 1, QUOTE_DOUBLE = 2, TRIPLE = 4, RAW = 8, FORMAT = 16, FIELD = 32, FORMAT_SPEC = 64 };
+enum { HEADER_NONE, HEADER_MARKER, HEADER_MAGIC };
+#define CHUNK_LIMIT 4096
 
-typedef enum {
-    SingleQuote = 1 << 0,
-    DoubleQuote = 1 << 1,
-    BackQuote = 1 << 2,
-    Raw = 1 << 3,
-    Format = 1 << 4,
-    Triple = 1 << 5,
-    Bytes = 1 << 6,
-} Flags;
-
+typedef struct { uint8_t flags; uint32_t depth; } Frame;
 typedef struct {
-    char flags;
-} Delimiter;
-
-static inline Delimiter new_delimiter() { return (Delimiter){0}; }
-
-static inline bool is_format(Delimiter *delimiter) { return delimiter->flags & Format; }
-
-static inline bool is_raw(Delimiter *delimiter) { return delimiter->flags & Raw; }
-
-static inline bool is_triple(Delimiter *delimiter) { return delimiter->flags & Triple; }
-
-static inline bool is_bytes(Delimiter *delimiter) { return delimiter->flags & Bytes; }
-
-static inline int32_t end_character(Delimiter *delimiter) {
-    if (delimiter->flags & SingleQuote) {
-        return '\'';
-    }
-    if (delimiter->flags & DoubleQuote) {
-        return '"';
-    }
-    if (delimiter->flags & BackQuote) {
-        return '`';
-    }
-    return 0;
-}
-
-static inline void set_format(Delimiter *delimiter) { delimiter->flags |= Format; }
-
-static inline void set_raw(Delimiter *delimiter) { delimiter->flags |= Raw; }
-
-static inline void set_triple(Delimiter *delimiter) { delimiter->flags |= Triple; }
-
-static inline void set_bytes(Delimiter *delimiter) { delimiter->flags |= Bytes; }
-
-static inline void set_end_character(Delimiter *delimiter, int32_t character) {
-    switch (character) {
-        case '\'':
-            delimiter->flags |= SingleQuote;
-            break;
-        case '"':
-            delimiter->flags |= DoubleQuote;
-            break;
-        case '`':
-            delimiter->flags |= BackQuote;
-            break;
-        default:
-            assert(false);
-    }
-}
-
-typedef struct {
-    Array(uint16_t) indents;
-    Array(Delimiter) delimiters;
-    bool inside_interpolated_string;
+    Array(Frame) frames;
     uint32_t bracket_depth;
-    bool continued_line;
-    bool body_line_start;
-    bool marker_prefix;
+    int32_t previous;
+    uint8_t header_kind, recent_length;
+    char recent[2];
+    bool line_start, cell_start, statement_start, rhs_ready, comment_line, continued_line;
+    bool marker_prefix, command_tail, help_prefix, suite_colon, arguments_active, conservative;
 } Scanner;
 
-static inline void advance(TSLexer *lexer) { lexer->advance(lexer, false); }
-
-static inline void skip(TSLexer *lexer) { lexer->advance(lexer, true); }
-
-// Every new opaque/header token consumes at most this many code points.
-// Prefixes continue through hidden tokens instead of imposing a syntax limit.
-#define CELL_CHUNK_LIMIT 4096
-
-static bool horizontal_space(int32_t c) { return c == ' ' || c == '\t'; }
-
-static bool scan_chunk(TSLexer *lexer, enum TokenType type, uint32_t consumed, bool spaces) {
-    while (!lexer->eof(lexer) && consumed < CELL_CHUNK_LIMIT &&
-           (spaces ? horizontal_space(lexer->lookahead) :
-                     lexer->lookahead != '\r' && lexer->lookahead != '\n')) {
-        advance(lexer);
-        ++consumed;
-    }
-    if (!consumed) return false;
-    lexer->mark_end(lexer);
-    lexer->result_symbol = type;
-    return true;
+static bool horizontal(int32_t c) { return c == ' ' || c == '\t'; }
+static bool newline(int32_t c) { return c == '\r' || c == '\n'; }
+static bool alpha(int32_t c) { return (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || c == '_'; }
+static bool identifier_start(int32_t c) { return alpha(c) || c >= 128; }
+static bool identifier_part(int32_t c) { return identifier_start(c) || (c >= '0' && c <= '9') || c == '.'; }
+static bool magic_name(int32_t c) { return alpha(c) || (c >= '0' && c <= '9') || c == '!'; }
+static bool outside(Scanner *s) { return !s->frames.size && !s->conservative; }
+static bool boundary(Scanner *s) { return s->line_start && outside(s) && !s->bracket_depth && !s->continued_line; }
+static void take(Scanner *s, TSLexer *lexer, uint32_t *count) {
+    int32_t c = lexer->lookahead;
+    lexer->advance(lexer, false);
+    ++*count;
+    s->line_start = newline(c);
 }
-
-static bool scan_prefix_hash(Scanner *scanner, TSLexer *lexer, const bool *valid_symbols, bool line_start, bool body, bool recover_boundary) {
-    if (lexer->lookahead != '#' || (!line_start && !valid_symbols[COMMENT_HASH]) || scanner->delimiters.size || scanner->indents.size != 1) return false;
-    bool eligible = line_start && !scanner->bracket_depth && !scanner->continued_line;
-    advance(lexer);
-    lexer->mark_end(lexer);
-    uint32_t count = 1;
-    while (horizontal_space(lexer->lookahead) && count < CELL_CHUNK_LIMIT) {
-        advance(lexer);
-        ++count;
+static void recent(Scanner *s, int32_t c) {
+    if (alpha(c)) {
+        if (s->recent_length < 2) s->recent[s->recent_length] = (char)c;
+        if (s->recent_length < 3) ++s->recent_length;
+    } else s->recent_length = 0;
+}
+static uint8_t string_flags(Scanner *s, int32_t quote) {
+    uint8_t flags = quote == '\'' ? QUOTE_SINGLE : QUOTE_DOUBLE;
+    if (s->recent_length <= 2) {
+        for (uint8_t i = 0; i < s->recent_length; i++) {
+            if (s->recent[i] == 'f' || s->recent[i] == 'F') flags |= FORMAT;
+            if (s->recent[i] == 'r' || s->recent[i] == 'R') flags |= RAW;
+        }
     }
-    enum TokenType type = PREFIX_HASH;
-    bool possible_marker = true;
-    if (!eligible || count < CELL_CHUNK_LIMIT) {
-        possible_marker = false;
-        type = body ? BODY_HASH : COMMENT_HASH;
-        if (eligible && lexer->lookahead == '%') {
-            advance(lexer);
-            ++count;
-            if (lexer->lookahead == '%') {
-                possible_marker = true;
-                type = MARKER_HASH;
-            } else if (count == CELL_CHUNK_LIMIT) {
-                possible_marker = true;
-                type = PREFIX_HASH;
+    s->recent_length = 0;
+    return flags;
+}
+static bool suite_keyword(const char *word) {
+    return !strcmp(word, "if") || !strcmp(word, "elif") || !strcmp(word, "else") ||
+        !strcmp(word, "for") || !strcmp(word, "while") || !strcmp(word, "with") ||
+        !strcmp(word, "try") || !strcmp(word, "except") || !strcmp(word, "finally") ||
+        !strcmp(word, "def") || !strcmp(word, "class") || !strcmp(word, "async") ||
+        !strcmp(word, "match") || !strcmp(word, "case");
+}
+// Lexical state only: no Python expressions, statements or indentation grammar.
+static void python_character(Scanner *s, TSLexer *lexer, uint32_t *count) {
+    int32_t c = lexer->lookahead;
+    Frame *frame = s->frames.size ? array_back(&s->frames) : NULL;
+    if (s->comment_line) {
+        take(s, lexer, count);
+        if (newline(c)) {
+            s->comment_line = false; s->continued_line = false;
+            s->statement_start = outside(s) && !s->bracket_depth;
+            s->rhs_ready = false; s->suite_colon = false;
+        }
+        return;
+    }
+    if (frame && !(frame->flags & FIELD)) {
+        int32_t quote = frame->flags & QUOTE_SINGLE ? '\'' : '"';
+        if (c == '\\') {
+            take(s, lexer, count);
+            if (!lexer->eof(lexer) && !((frame->flags & FORMAT) && (lexer->lookahead == '{' || lexer->lookahead == '}'))) {
+                int32_t escaped = lexer->lookahead; take(s, lexer, count);
+                if (escaped == '\r' && lexer->lookahead == '\n') take(s, lexer, count);
             }
+            return;
         }
+        if (c == quote) {
+            take(s, lexer, count);
+            if (!(frame->flags & TRIPLE)) { array_pop(&s->frames); return; }
+            if (lexer->lookahead == quote) {
+                take(s, lexer, count);
+                if (lexer->lookahead == quote) { take(s, lexer, count); array_pop(&s->frames); }
+            }
+            return;
+        }
+        if ((frame->flags & FORMAT) && c == '{') {
+            take(s, lexer, count);
+            if (lexer->lookahead == '{') take(s, lexer, count);
+            else array_push(&s->frames, ((Frame){ .flags = FIELD }));
+            return;
+        }
+        if ((frame->flags & FORMAT) && c == '}') {
+            take(s, lexer, count);
+            if (lexer->lookahead == '}') take(s, lexer, count);
+            return;
+        }
+        if (newline(c) && !(frame->flags & TRIPLE)) array_pop(&s->frames);
+        take(s, lexer, count);
+        return;
     }
-    // A reserved marker is also a lexical boundary after an incomplete Python
-    // expression. Returning that unexpected lookahead lets normal recovery
-    // close the erroneous code before the marker instead of treating it as an extra.
-    if (!valid_symbols[type] && !(recover_boundary && (type == MARKER_HASH || type == PREFIX_HASH))) return false;
-    scanner->marker_prefix = possible_marker;
-    scanner->body_line_start = false;
-    lexer->result_symbol = type;
-    return true;
+    if (frame && (frame->flags & FORMAT_SPEC)) {
+        take(s, lexer, count);
+        if (c == '{') array_push(&s->frames, ((Frame){ .flags = FIELD }));
+        else if (c == '}') array_pop(&s->frames);
+        return;
+    }
+    if (c == '\'' || c == '"') {
+        uint8_t flags = string_flags(s, c);
+        take(s, lexer, count);
+        if (lexer->lookahead == c) {
+            take(s, lexer, count);
+            if (lexer->lookahead != c) return; // Empty string.
+            take(s, lexer, count); flags |= TRIPLE;
+        }
+        array_push(&s->frames, ((Frame){ .flags = flags }));
+        s->cell_start = false; s->statement_start = false; s->rhs_ready = false;
+        return;
+    }
+    if (c == '#') {
+        s->comment_line = true; s->cell_start = false; s->statement_start = false; s->rhs_ready = false;
+        take(s, lexer, count); return;
+    }
+    if (c == '\\') {
+        take(s, lexer, count);
+        if (newline(lexer->lookahead)) {
+            int32_t ending = lexer->lookahead; take(s, lexer, count);
+            if (ending == '\r' && lexer->lookahead == '\n') take(s, lexer, count);
+            s->continued_line = true; s->statement_start = false; s->rhs_ready = false;
+        }
+        s->recent_length = 0; s->cell_start = false; return;
+    }
+    if (newline(c)) {
+        take(s, lexer, count); s->continued_line = false;
+        s->statement_start = outside(s) && !s->bracket_depth;
+        s->rhs_ready = false; s->help_prefix = false; s->suite_colon = false; s->recent_length = 0;
+        s->previous = 0; return;
+    }
+    if (horizontal(c) || c == '\f') { take(s, lexer, count); s->recent_length = 0; return; }
+    uint32_t *depth = frame ? &frame->depth : &s->bracket_depth;
+    if (c == '(' || c == '[' || c == '{') ++*depth;
+    else if (c == ')' || c == ']' || c == '}') {
+        if (frame && c == '}' && !frame->depth) { take(s, lexer, count); array_pop(&s->frames); return; }
+        if (*depth) --*depth;
+    }
+    if (frame && c == ':' && !frame->depth) frame->flags |= FORMAT_SPEC;
+    bool top = outside(s) && !s->bracket_depth;
+    if (top && c == ';') { s->statement_start = true; s->rhs_ready = false; s->suite_colon = false; }
+    else if (top && c == ':' && s->suite_colon) { s->statement_start = true; s->rhs_ready = false; s->suite_colon = false; }
+    else {
+        s->statement_start = false;
+        s->rhs_ready = top && c == '=' && s->previous != '=' && s->previous != ':' &&
+            s->previous != '!' && s->previous != '<' && s->previous != '>' &&
+            s->previous != '+' && s->previous != '-' && s->previous != '*' &&
+            s->previous != '/' && s->previous != '%' && s->previous != '&' &&
+            s->previous != '|' && s->previous != '^';
+    }
+    s->cell_start = false; s->previous = c; recent(s, c); take(s, lexer, count);
+    if (c == '=' && lexer->lookahead == '=') s->rhs_ready = false;
 }
-
-static bool scan_header_space(TSLexer *lexer, const bool *valid_symbols) {
-    uint32_t count = 0;
-    while (horizontal_space(lexer->lookahead) && count < CELL_CHUNK_LIMIT) {
-        advance(lexer);
-        ++count;
-    }
+static bool finish(TSLexer *lexer, enum TokenType type, uint32_t count) {
     if (!count) return false;
+    lexer->mark_end(lexer); lexer->result_symbol = type; return true;
+}
+static bool line_chunk(Scanner *s, TSLexer *lexer, enum TokenType type, uint32_t count, bool spaces) {
+    while (!lexer->eof(lexer) && count < CHUNK_LIMIT &&
+        (spaces ? horizontal(lexer->lookahead) : !newline(lexer->lookahead))) take(s, lexer, &count);
+    return finish(lexer, type, count);
+}
+static bool header_space(Scanner *s, TSLexer *lexer, const bool *valid) {
+    uint32_t count = 0;
+    while (horizontal(lexer->lookahead) && count < CHUNK_LIMIT) take(s, lexer, &count);
     enum TokenType type;
-    if (horizontal_space(lexer->lookahead) && valid_symbols[UNCERTAIN_SPACE]) type = UNCERTAIN_SPACE;
-    else if ((lexer->eof(lexer) || lexer->lookahead == '\r' || lexer->lookahead == '\n') && valid_symbols[TRAILING_SPACE])
-        type = TRAILING_SPACE;
-    else if (valid_symbols[TITLE_SPACE]) type = TITLE_SPACE;
-    else if (valid_symbols[HEADER_SPACE]) type = HEADER_SPACE;
-    else return false;
-    lexer->mark_end(lexer);
-    lexer->result_symbol = type;
-    return true;
+    if (horizontal(lexer->lookahead) && valid[UNCERTAIN_SPACE]) type = UNCERTAIN_SPACE;
+    else if ((lexer->eof(lexer) || newline(lexer->lookahead)) && valid[TRAILING_SPACE]) type = TRAILING_SPACE;
+    else if (valid[TITLE_SPACE]) type = TITLE_SPACE;
+    else type = HEADER_SPACE;
+    return finish(lexer, type, count);
 }
-
-static bool scan_title_chunk(TSLexer *lexer, uint32_t consumed) {
-    while (!lexer->eof(lexer) && consumed < CELL_CHUNK_LIMIT && !horizontal_space(lexer->lookahead) &&
-           lexer->lookahead != '\r' && lexer->lookahead != '\n') {
-        advance(lexer);
-        ++consumed;
-    }
-    if (!consumed) return false;
-    lexer->mark_end(lexer);
-    lexer->result_symbol = HEADER_TITLE_CHUNK;
-    return true;
+static bool title_chunk(Scanner *s, TSLexer *lexer, uint32_t count) {
+    while (!lexer->eof(lexer) && count < CHUNK_LIMIT && !horizontal(lexer->lookahead) && !newline(lexer->lookahead))
+        take(s, lexer, &count);
+    return finish(lexer, HEADER_TITLE_CHUNK, count);
 }
-
-static bool scan_header_type(TSLexer *lexer, const bool *valid_symbols) {
-    char metadata[16] = {0};
-    uint32_t length = 0;
-    while (length < sizeof(metadata) - 1 && lexer->lookahead &&
-           !horizontal_space(lexer->lookahead) && lexer->lookahead != '\r' && lexer->lookahead != '\n') {
-        if (lexer->lookahead > 127) break;
-        metadata[length++] = (char)lexer->lookahead;
-        advance(lexer);
+static bool header_type(Scanner *s, TSLexer *lexer, const bool *valid) {
+    char text[16] = {0}; uint32_t count = 0;
+    while (count < sizeof(text)-1 && lexer->lookahead < 128 && !lexer->eof(lexer) &&
+        !horizontal(lexer->lookahead) && !newline(lexer->lookahead)) {
+        text[count] = (char)lexer->lookahead; take(s, lexer, &count);
     }
-    bool delimited = lexer->eof(lexer) || horizontal_space(lexer->lookahead) ||
-                     lexer->lookahead == '\r' || lexer->lookahead == '\n';
     enum TokenType type = HEADER_TITLE_CHUNK;
-    if (delimited) {
-        if (!strcmp(metadata, "[markdown]") || !strcmp(metadata, "[md]")) type = MARKDOWN_CELL_TYPE;
-        else if (!strcmp(metadata, "[raw]")) type = RAW_CELL_TYPE;
-        else if (!strcmp(metadata, "[code]")) type = CODE_CELL_TYPE;
+    if (lexer->eof(lexer) || horizontal(lexer->lookahead) || newline(lexer->lookahead)) {
+        if (!strcmp(text, "[markdown]") || !strcmp(text, "[md]")) type = MARKDOWN_CELL_TYPE;
+        else if (!strcmp(text, "[raw]")) type = RAW_CELL_TYPE;
+        else if (!strcmp(text, "[code]")) type = CODE_CELL_TYPE;
     }
-    if (type != HEADER_TITLE_CHUNK && valid_symbols[type]) {
-        lexer->mark_end(lexer);
-        lexer->result_symbol = type;
-        return true;
+    if (type != HEADER_TITLE_CHUNK && valid[type]) return finish(lexer, type, count);
+    return valid[HEADER_TITLE_CHUNK] && title_chunk(s, lexer, count);
+}
+static bool python_magic_name(const char *name) {
+    return !strcmp(name, "time") || !strcmp(name, "timeit") || !strcmp(name, "prun") ||
+        !strcmp(name, "debug") || !strcmp(name, "capture") || !strcmp(name, "code_wrap") ||
+        !strcmp(name, "python") || !strcmp(name, "python2") || !strcmp(name, "python3") || !strcmp(name, "pypy");
+}
+static bool cell_magic(Scanner *s, TSLexer *lexer, const bool *valid) {
+    if (!s->cell_start || !boundary(s) || lexer->lookahead != '%') return false;
+    uint32_t count = 0; take(s, lexer, &count);
+    if (lexer->lookahead != '%') {
+        s->command_tail = true; s->cell_start = false; s->statement_start = false; s->rhs_ready = false;
+        return line_chunk(s, lexer, MAGIC_STATEMENT_START, count, false);
     }
-    return valid_symbols[HEADER_TITLE_CHUNK] && scan_title_chunk(lexer, length);
-}
-
-static bool scan_line_continuation(Scanner *scanner, TSLexer *lexer) {
-    if (lexer->lookahead != '\\') return false;
-    advance(lexer);
-    if (lexer->lookahead == '\r') advance(lexer);
-    if (lexer->lookahead != '\n' && !lexer->eof(lexer)) return false;
-    if (lexer->lookahead == '\n') advance(lexer);
-    lexer->mark_end(lexer);
-    scanner->continued_line = true;
-    lexer->result_symbol = LINE_CONTINUATION;
-    return true;
-}
-
-static bool scan_comment(Scanner *scanner, TSLexer *lexer) {
-    if (lexer->lookahead != '#') return false;
-    bool eligible = lexer->get_column(lexer) == 0 && !scanner->delimiters.size &&
-                    !scanner->bracket_depth && !scanner->continued_line;
-    if (eligible) {
-        uint32_t count = 0;
-        advance(lexer);
-        ++count;
-        while (horizontal_space(lexer->lookahead) && count < CELL_CHUNK_LIMIT) { advance(lexer); ++count; }
-        if (count == CELL_CHUNK_LIMIT) return false;
-        if (lexer->lookahead == '%') {
-            advance(lexer);
-            if (lexer->lookahead == '%') return false;
-        }
+    take(s, lexer, &count); lexer->mark_end(lexer);
+    char name[32] = {0}; uint32_t length = 0;
+    while (length < sizeof(name)-1 && magic_name(lexer->lookahead)) {
+        name[length++] = (char)lexer->lookahead; lexer->advance(lexer, false);
     }
-    while (!lexer->eof(lexer) && lexer->lookahead != '\r' && lexer->lookahead != '\n') advance(lexer);
-    lexer->mark_end(lexer);
-    scanner->body_line_start = true;
-    scanner->continued_line = false;
-    lexer->result_symbol = COMMENT;
-    return true;
-}
-
-static bool scan_recovery_marker(Scanner *scanner, TSLexer *lexer, const bool *valid_symbols) {
-    if (lexer->lookahead != '#' || scanner->delimiters.size || scanner->bracket_depth || scanner->continued_line ||
-        scanner->indents.size != 1 || lexer->get_column(lexer) != 0) return false;
-    bool restricted[CELL_BODY_CHUNK + 1];
-    memcpy(restricted, valid_symbols, sizeof(restricted));
-    restricted[COMMENT_HASH] = false;
-    restricted[BODY_HASH] = false;
-    return scan_prefix_hash(scanner, lexer, restricted, true, false, true);
-}
-
-static bool scan_cell_magic(Scanner *scanner, TSLexer *lexer, const bool *valid_symbols) {
-    if (lexer->get_column(lexer) != 0 || scanner->delimiters.size > 0 ||
-        scanner->indents.size > 1 || lexer->lookahead != '%') return false;
-    advance(lexer);
-    if (lexer->lookahead != '%') return false;
-    advance(lexer);
-    lexer->mark_end(lexer);
-    char name[32] = {0};
-    uint32_t length = 0;
-    while (length < sizeof(name) - 1 &&
-           ((lexer->lookahead >= 'a' && lexer->lookahead <= 'z') ||
-            (lexer->lookahead >= 'A' && lexer->lookahead <= 'Z') ||
-            (lexer->lookahead >= '0' && lexer->lookahead <= '9') ||
-            lexer->lookahead == '_' || lexer->lookahead == '!')) {
-        name[length++] = (char)lexer->lookahead;
-        advance(lexer);
+    bool delimited = !magic_name(lexer->lookahead);
+    enum TokenType type = delimited && python_magic_name(name) ? PYTHON_CELL_MAGIC : FOREIGN_CELL_MAGIC;
+    if (!length || !valid[type]) {
+        // The marker prefix was consumed, but is an ordinary line magic here.
+        s->command_tail = true; s->cell_start = false; s->statement_start = false;
+        return line_chunk(s, lexer, MAGIC_STATEMENT_START, count + length, false);
     }
-    if (!length) return false;
-    bool python = !strcmp(name, "time") || !strcmp(name, "timeit") || !strcmp(name, "prun") ||
-                  !strcmp(name, "debug") || !strcmp(name, "capture") || !strcmp(name, "code_wrap");
-    enum TokenType type = python ? PYTHON_CELL_MAGIC : FOREIGN_CELL_MAGIC;
-    if (!valid_symbols[type]) return false;
-    scanner->body_line_start = false;
-    lexer->result_symbol = type;
-    return true;
+    s->header_kind = HEADER_MAGIC; s->arguments_active = false;
+    s->cell_start = false; s->statement_start = false; s->recent_length = 0;
+    lexer->result_symbol = type; return true;
 }
-
-static bool scan_cell_body(Scanner *scanner, TSLexer *lexer, const bool *valid_symbols) {
+static bool special_here(Scanner *s, int32_t c) {
+    if (!outside(s) || s->bracket_depth || s->comment_line || s->continued_line) return false;
+    return (s->statement_start && (c == '%' || c == '!' || c == '?' || identifier_start(c))) ||
+        (s->rhs_ready && (c == '%' || c == '!')) || (s->help_prefix && c == '?') ||
+        (boundary(s) && c == '#');
+}
+static bool python_chunk(Scanner *s, TSLexer *lexer) {
     uint32_t count = 0;
-    bool line_start = scanner->body_line_start;
-    while (!lexer->eof(lexer) && count < CELL_CHUNK_LIMIT) {
-        if (line_start && lexer->lookahead == '#') {
-            if (!count) return scan_prefix_hash(scanner, lexer, valid_symbols, true, true, false);
-            break;
-        }
-        line_start = lexer->lookahead == '\r' || lexer->lookahead == '\n';
-        advance(lexer);
-        ++count;
+    while (!lexer->eof(lexer) && count < CHUNK_LIMIT) {
+        if (special_here(s, lexer->lookahead)) break;
+        if (count && CHUNK_LIMIT - count < 3 &&
+            (lexer->lookahead == '\'' || lexer->lookahead == '"' || lexer->lookahead == '\\' ||
+             lexer->lookahead == '{' || lexer->lookahead == '}')) break;
+        s->help_prefix = false;
+        python_character(s, lexer, &count);
     }
-    if (!count) return false;
-    lexer->mark_end(lexer);
-    scanner->body_line_start = line_start;
-    scanner->marker_prefix = false;
-    lexer->result_symbol = CELL_BODY_CHUNK;
-    return true;
+    return finish(lexer, PYTHON_CHUNK, count);
 }
-
-static bool scan_cell_tokens(Scanner *scanner, TSLexer *lexer, const bool *valid_symbols) {
-    if (valid_symbols[PREFIX_SPACE] && horizontal_space(lexer->lookahead)) {
-        bool result = scan_chunk(lexer, PREFIX_SPACE, 0, true);
-        if (!horizontal_space(lexer->lookahead) && lexer->lookahead != '%') {
-            scanner->marker_prefix = false;
-            if (lexer->lookahead == '\r' || lexer->lookahead == '\n' || lexer->eof(lexer)) scanner->body_line_start = true;
-        }
-        return result;
+static bool identifier_prefix(Scanner *s, TSLexer *lexer) {
+    uint32_t count = 0; char word[16] = {0}; bool first = s->statement_start;
+    while (!lexer->eof(lexer) && count < CHUNK_LIMIT && identifier_part(lexer->lookahead)) {
+        if (count < sizeof(word)-1 && lexer->lookahead < 128) word[count] = (char)lexer->lookahead;
+        recent(s, lexer->lookahead); s->previous = lexer->lookahead; take(s, lexer, &count);
     }
-    if (valid_symbols[PREFIX_PERCENT_START] && scanner->marker_prefix && lexer->lookahead == '%') {
-        advance(lexer);
+    if (first) s->suite_colon = count < sizeof(word) && suite_keyword(word);
+    s->help_prefix = true; s->cell_start = false; s->statement_start = false; s->rhs_ready = false;
+    return finish(lexer, HELP_PREFIX_CHUNK, count);
+}
+bool tree_sitter_ipython_external_scanner_scan(void *payload, TSLexer *lexer, const bool *valid) {
+    Scanner *s = payload;
+    if (valid[DOCUMENT_END] && lexer->eof(lexer)) { lexer->result_symbol = DOCUMENT_END; return true; }
+    if (valid[COMMAND_TAIL] && s->command_tail && !newline(lexer->lookahead) && !lexer->eof(lexer))
+        return line_chunk(s, lexer, COMMAND_TAIL, 0, false);
+    if (newline(lexer->lookahead) || lexer->eof(lexer)) s->command_tail = false;
+    if (valid[PREFIX_SPACE] && s->marker_prefix && horizontal(lexer->lookahead))
+        return line_chunk(s, lexer, PREFIX_SPACE, 0, true);
+    if (s->marker_prefix && lexer->lookahead == '%') {
+        uint32_t count = 0; take(s, lexer, &count);
         if (lexer->lookahead == '%') {
-            advance(lexer);
-            lexer->mark_end(lexer);
-            scanner->marker_prefix = false;
-            lexer->result_symbol = PREFIX_PERCENT_START;
-            return true;
+            if (!valid[PREFIX_PERCENT_START]) return false;
+            take(s, lexer, &count); s->marker_prefix = false; s->header_kind = HEADER_MARKER;
+            s->comment_line = false; return finish(lexer, PREFIX_PERCENT_START, count);
         }
-        scanner->marker_prefix = false;
-        if (valid_symbols[CELL_BODY_CHUNK]) return scan_chunk(lexer, CELL_BODY_CHUNK, 1, false);
-        if (valid_symbols[COMMENT_BODY_CHUNK]) return scan_chunk(lexer, COMMENT_BODY_CHUNK, 1, false);
+        s->marker_prefix = false;
+        if (valid[CELL_BODY_CHUNK]) return line_chunk(s, lexer, CELL_BODY_CHUNK, count, false);
+        if (valid[PYTHON_CHUNK]) return line_chunk(s, lexer, PYTHON_CHUNK, count, false);
         return false;
     }
-    if (scanner->marker_prefix && lexer->lookahead == '%' &&
-        (valid_symbols[CELL_BODY_CHUNK] || valid_symbols[COMMENT_BODY_CHUNK])) {
-        advance(lexer);
-        if (lexer->lookahead == '%') return false;
-        scanner->marker_prefix = false;
-        return scan_chunk(lexer, valid_symbols[CELL_BODY_CHUNK] ? CELL_BODY_CHUNK : COMMENT_BODY_CHUNK, 1, false);
-    }
-    if (valid_symbols[PREFIX_PERCENT_MORE] && lexer->lookahead == '%') {
+    if (s->marker_prefix && !horizontal(lexer->lookahead)) s->marker_prefix = false;
+    if (valid[PREFIX_PERCENT_MORE] && lexer->lookahead == '%') {
         uint32_t count = 0;
-        while (lexer->lookahead == '%' && count < CELL_CHUNK_LIMIT) {
-            advance(lexer);
-            ++count;
+        while (lexer->lookahead == '%' && count < CHUNK_LIMIT) take(s, lexer, &count);
+        return finish(lexer, PREFIX_PERCENT_MORE, count);
+    }
+    if (valid[ARGUMENTS_CHUNK] && (s->arguments_active || !horizontal(lexer->lookahead)) &&
+        !newline(lexer->lookahead) && !lexer->eof(lexer)) {
+        s->arguments_active = true; return line_chunk(s, lexer, ARGUMENTS_CHUNK, 0, false);
+    }
+    if ((valid[HEADER_SPACE] || valid[TITLE_SPACE] || valid[TRAILING_SPACE] || valid[UNCERTAIN_SPACE]) && horizontal(lexer->lookahead))
+        return header_space(s, lexer, valid);
+    if ((valid[MARKDOWN_CELL_TYPE] || valid[RAW_CELL_TYPE] || valid[CODE_CELL_TYPE]) && lexer->lookahead == '[')
+        return header_type(s, lexer, valid);
+    if (valid[HEADER_TITLE_CHUNK] && !horizontal(lexer->lookahead) && !newline(lexer->lookahead) && !lexer->eof(lexer))
+        return title_chunk(s, lexer, 0);
+    if (valid[MAGIC_NAME_CHUNK] && magic_name(lexer->lookahead)) {
+        uint32_t count = 0;
+        while (magic_name(lexer->lookahead) && count < CHUNK_LIMIT) take(s, lexer, &count);
+        return finish(lexer, MAGIC_NAME_CHUNK, count);
+    }
+    if (valid[CELL_HEADER_END] && (newline(lexer->lookahead) || lexer->eof(lexer))) {
+        uint32_t count = 0;
+        if (lexer->lookahead == '\r') take(s, lexer, &count);
+        if (lexer->lookahead == '\n') take(s, lexer, &count);
+        s->line_start = true; s->cell_start = s->header_kind != HEADER_MAGIC;
+        s->statement_start = true; s->rhs_ready = false; s->comment_line = false; s->continued_line = false;
+        s->marker_prefix = false; s->arguments_active = false; s->header_kind = HEADER_NONE;
+        s->bracket_depth = 0; s->frames.size = 0; s->recent_length = 0; s->help_prefix = false; s->suite_colon = false;
+        lexer->mark_end(lexer); lexer->result_symbol = CELL_HEADER_END; return true;
+    }
+    if (valid[CELL_BODY_CHUNK]) {
+        uint32_t count = 0;
+        while (!lexer->eof(lexer) && count < CHUNK_LIMIT) {
+            if (s->line_start && lexer->lookahead == '#') break;
+            take(s, lexer, &count);
         }
-        lexer->mark_end(lexer);
-        lexer->result_symbol = PREFIX_PERCENT_MORE;
-        return true;
+        if (count) return finish(lexer, CELL_BODY_CHUNK, count);
     }
-    if ((valid_symbols[HEADER_SPACE] || valid_symbols[TITLE_SPACE] || valid_symbols[TRAILING_SPACE] ||
-         valid_symbols[UNCERTAIN_SPACE]) && horizontal_space(lexer->lookahead))
-        return scan_header_space(lexer, valid_symbols);
-    if ((valid_symbols[MARKDOWN_CELL_TYPE] || valid_symbols[RAW_CELL_TYPE] || valid_symbols[CODE_CELL_TYPE]) &&
-        lexer->lookahead == '[') return scan_header_type(lexer, valid_symbols);
-    if (valid_symbols[HEADER_TITLE_CHUNK] && !horizontal_space(lexer->lookahead) &&
-        lexer->lookahead != '\r' && lexer->lookahead != '\n' && !lexer->eof(lexer))
-        return scan_title_chunk(lexer, 0);
-    if (valid_symbols[CELL_HEADER_END] &&
-        (lexer->lookahead == '\r' || lexer->lookahead == '\n' || lexer->eof(lexer))) {
-        if (lexer->lookahead == '\r') advance(lexer);
-        if (lexer->lookahead == '\n') advance(lexer);
-        lexer->mark_end(lexer);
-        scanner->body_line_start = true;
-        scanner->marker_prefix = false;
-        lexer->result_symbol = CELL_HEADER_END;
-        return true;
+    if ((valid[PREFIX_HASH] || valid[BODY_HASH]) && lexer->lookahead == '#' &&
+        ((valid[CELL_BODY_CHUNK] && s->line_start) || boundary(s))) {
+        uint32_t count = 0; take(s, lexer, &count);
+        s->marker_prefix = true; s->comment_line = true; s->statement_start = false; s->cell_start = false;
+        return finish(lexer, PREFIX_HASH, count);
     }
-    if (valid_symbols[CELL_BODY_CHUNK]) return scan_cell_body(scanner, lexer, valid_symbols);
-    if (valid_symbols[COMMENT_END] &&
-        (lexer->lookahead == '\r' || lexer->lookahead == '\n' || lexer->eof(lexer))) {
-        // A zero-width terminator must not change scanner state: the reuse
-        // cursor can already point at the following repeat subtree here.
-        lexer->result_symbol = COMMENT_END;
-        return true;
-    }
-    if (valid_symbols[COMMENT_BODY_CHUNK]) {
-        scanner->marker_prefix = false;
-        bool result = scan_chunk(lexer, COMMENT_BODY_CHUNK, 0, false);
-        if (lexer->lookahead == '\r' || lexer->lookahead == '\n' || lexer->eof(lexer)) {
-            scanner->body_line_start = true;
-            scanner->continued_line = false;
+    if (valid[CELL_BODY_CHUNK]) return false;
+    if (valid[PADDING_CHUNK] && s->cell_start && (horizontal(lexer->lookahead) || newline(lexer->lookahead) || lexer->lookahead == '\f')) {
+        uint32_t count = 0;
+        while (count < CHUNK_LIMIT && !lexer->eof(lexer) &&
+            (horizontal(lexer->lookahead) || newline(lexer->lookahead) || lexer->lookahead == '\f')) {
+            take(s, lexer, &count);
         }
-        return result;
+        return finish(lexer, PADDING_CHUNK, count);
     }
+    if ((valid[PYTHON_CELL_MAGIC] || valid[FOREIGN_CELL_MAGIC]) && s->cell_start && boundary(s) && lexer->lookahead == '%')
+        return cell_magic(s, lexer, valid);
+    if (outside(s) && !s->bracket_depth && !s->comment_line && !s->continued_line) {
+        if (s->help_prefix && valid[HELP_PREFIX_CHUNK] && identifier_part(lexer->lookahead)) return identifier_prefix(s, lexer);
+        if (s->help_prefix && lexer->lookahead == '?') {
+            if (!valid[HELP_SUFFIX]) return false;
+            uint32_t count = 0; take(s, lexer, &count);
+            if (lexer->lookahead == '?') take(s, lexer, &count);
+            s->help_prefix = false; return finish(lexer, HELP_SUFFIX, count);
+        }
+        if ((s->statement_start || s->rhs_ready) && (lexer->lookahead == '%' || lexer->lookahead == '!' || (s->statement_start && lexer->lookahead == '?'))) {
+            enum TokenType type = lexer->lookahead == '%' ? (s->rhs_ready ? MAGIC_EXPRESSION_START : MAGIC_STATEMENT_START) :
+                lexer->lookahead == '!' ? (s->rhs_ready ? SHELL_EXPRESSION_START : SHELL_STATEMENT_START) : HELP_STATEMENT_START;
+            if (!valid[type]) return false;
+            s->cell_start = false; s->statement_start = false; s->rhs_ready = false; s->command_tail = true; s->help_prefix = false;
+            return line_chunk(s, lexer, type, 0, false);
+        }
+        if (s->statement_start && valid[HELP_PREFIX_CHUNK] && identifier_start(lexer->lookahead)) return identifier_prefix(s, lexer);
+    }
+    if (valid[PYTHON_CHUNK]) return python_chunk(s, lexer);
     return false;
 }
-
-bool tree_sitter_ipython_external_scanner_scan(void *payload, TSLexer *lexer, const bool *valid_symbols) {
-    Scanner *scanner = (Scanner *)payload;
-    bool error_recovery_mode = valid_symbols[STRING_CONTENT] && valid_symbols[INDENT];
-    if (error_recovery_mode && scan_recovery_marker(scanner, lexer, valid_symbols)) return true;
-    if (error_recovery_mode && scanner->marker_prefix && horizontal_space(lexer->lookahead) && valid_symbols[PREFIX_SPACE])
-        return scan_chunk(lexer, PREFIX_SPACE, 0, true);
-    if (!error_recovery_mode && scan_cell_tokens(scanner, lexer, valid_symbols)) return true;
-    if (error_recovery_mode && scan_recovery_marker(scanner, lexer, valid_symbols)) return true;
-    if (!error_recovery_mode && (valid_symbols[PREFIX_HASH] || valid_symbols[MARKER_HASH] || valid_symbols[COMMENT_HASH] || valid_symbols[COMMENT]) && lexer->lookahead == '#' &&
-        scanner->indents.size == 1 && !scanner->delimiters.size && !scanner->bracket_depth && !scanner->continued_line && (lexer->get_column(lexer) == 0 || valid_symbols[COMMENT_HASH]))
-        return scan_prefix_hash(scanner, lexer, valid_symbols, lexer->get_column(lexer) == 0, false, true);
-    if (!error_recovery_mode && (valid_symbols[PYTHON_CELL_MAGIC] || valid_symbols[FOREIGN_CELL_MAGIC]) &&
-        lexer->lookahead == '%') return scan_cell_magic(scanner, lexer, valid_symbols);
-
-    bool within_brackets = valid_symbols[CLOSE_BRACE] || valid_symbols[CLOSE_PAREN] || valid_symbols[CLOSE_BRACKET];
-
-    bool advanced_once = false;
-    if (valid_symbols[ESCAPE_INTERPOLATION] && scanner->delimiters.size > 0 &&
-        (lexer->lookahead == '{' || lexer->lookahead == '}') && !error_recovery_mode) {
-        Delimiter *delimiter = array_back(&scanner->delimiters);
-        if (is_format(delimiter)) {
-            lexer->mark_end(lexer);
-            bool is_left_brace = lexer->lookahead == '{';
-            advance(lexer);
-            advanced_once = true;
-            if ((lexer->lookahead == '{' && is_left_brace) || (lexer->lookahead == '}' && !is_left_brace)) {
-                advance(lexer);
-                lexer->mark_end(lexer);
-                lexer->result_symbol = ESCAPE_INTERPOLATION;
-                return true;
-            }
-            return false;
-        }
-    }
-
-    if (valid_symbols[STRING_CONTENT] && scanner->delimiters.size > 0 && !error_recovery_mode) {
-        Delimiter *delimiter = array_back(&scanner->delimiters);
-        int32_t end_char = end_character(delimiter);
-        bool has_content = advanced_once;
-        while (lexer->lookahead) {
-            if ((advanced_once || lexer->lookahead == '{' || lexer->lookahead == '}') && is_format(delimiter)) {
-                lexer->mark_end(lexer);
-                lexer->result_symbol = STRING_CONTENT;
-                return has_content;
-            }
-            if (lexer->lookahead == '\\') {
-                if (is_raw(delimiter)) {
-                    // Step over the backslash.
-                    advance(lexer);
-                    // Step over any escaped quotes.
-                    if (lexer->lookahead == end_character(delimiter) || lexer->lookahead == '\\') {
-                        advance(lexer);
-                    }
-                    // Step over newlines
-                    if (lexer->lookahead == '\r') {
-                        advance(lexer);
-                        if (lexer->lookahead == '\n') {
-                            advance(lexer);
-                        }
-                    } else if (lexer->lookahead == '\n') {
-                        advance(lexer);
-                    }
-                    continue;
-                }
-                if (is_bytes(delimiter)) {
-                    lexer->mark_end(lexer);
-                    advance(lexer);
-                    if (lexer->lookahead == 'N' || lexer->lookahead == 'u' || lexer->lookahead == 'U') {
-                        // In bytes string, \N{...}, \uXXXX and \UXXXXXXXX are
-                        // not escape sequences
-                        // https://docs.python.org/3/reference/lexical_analysis.html#string-and-bytes-literals
-                        advance(lexer);
-                    } else {
-                        lexer->result_symbol = STRING_CONTENT;
-                        return has_content;
-                    }
-                } else {
-                    lexer->mark_end(lexer);
-                    lexer->result_symbol = STRING_CONTENT;
-                    return has_content;
-                }
-            } else if (lexer->lookahead == end_char) {
-                if (is_triple(delimiter)) {
-                    lexer->mark_end(lexer);
-                    advance(lexer);
-                    if (lexer->lookahead == end_char) {
-                        advance(lexer);
-                        if (lexer->lookahead == end_char) {
-                            if (has_content) {
-                                lexer->result_symbol = STRING_CONTENT;
-                            } else {
-                                advance(lexer);
-                                lexer->mark_end(lexer);
-                                array_pop(&scanner->delimiters);
-                                lexer->result_symbol = STRING_END;
-                                scanner->inside_interpolated_string = false;
-                            }
-                            return true;
-                        }
-                        lexer->mark_end(lexer);
-                        lexer->result_symbol = STRING_CONTENT;
-                        return true;
-                    }
-                    lexer->mark_end(lexer);
-                    lexer->result_symbol = STRING_CONTENT;
-                    return true;
-                }
-                if (has_content) {
-                    lexer->result_symbol = STRING_CONTENT;
-                } else {
-                    advance(lexer);
-                    array_pop(&scanner->delimiters);
-                    lexer->result_symbol = STRING_END;
-                    scanner->inside_interpolated_string = false;
-                }
-                lexer->mark_end(lexer);
-                return true;
-
-            } else if (lexer->lookahead == '\n' && has_content && !is_triple(delimiter)) {
-                return false;
-            }
-            advance(lexer);
-            has_content = true;
-        }
-    }
-
-    if (valid_symbols[COMMENT] && lexer->lookahead == '#' && !scanner->delimiters.size) return scan_comment(scanner, lexer);
-    if (valid_symbols[LINE_CONTINUATION] && lexer->lookahead == '\\' &&
-        (scanner->indents.size == 1 || (!valid_symbols[INDENT] && !valid_symbols[DEDENT] && !valid_symbols[NEWLINE])))
-        return scan_line_continuation(scanner, lexer);
-
-    lexer->mark_end(lexer);
-
-    bool found_end_of_line = false;
-    uint16_t indent_length = 0;
-    int32_t first_comment_indent_length = -1;
-    for (;;) {
-        if (lexer->lookahead == '\n') {
-            found_end_of_line = true;
-            scanner->continued_line = false;
-            indent_length = 0;
-            skip(lexer);
-        } else if (lexer->lookahead == ' ') {
-            indent_length++;
-            skip(lexer);
-        } else if (lexer->lookahead == '\r' || lexer->lookahead == '\f') {
-            indent_length = 0;
-            skip(lexer);
-        } else if (lexer->lookahead == '\t') {
-            indent_length += 8;
-            skip(lexer);
-        } else if (lexer->lookahead == '#' && indent_length == 0 && scanner->delimiters.size == 0 &&
-                   ((found_end_of_line && !within_brackets && scanner->indents.size == 1 && valid_symbols[NEWLINE] && !valid_symbols[INDENT]) || valid_symbols[PREFIX_HASH] ||
-                    valid_symbols[MARKER_HASH] || valid_symbols[COMMENT_HASH])) {
-            break;
-        } else if (lexer->lookahead == '#' && (valid_symbols[INDENT] || valid_symbols[DEDENT] ||
-                                               valid_symbols[NEWLINE] || valid_symbols[EXCEPT])) {
-            // If we haven't found an EOL yet,
-            // then this is a comment after an expression:
-            //   foo = bar # comment
-            // Just return, since we don't want to generate an indent/dedent
-            // token.
-            if (!found_end_of_line) {
-                return false;
-            }
-            if (first_comment_indent_length == -1) {
-                first_comment_indent_length = (int32_t)indent_length;
-            }
-            while (lexer->lookahead && lexer->lookahead != '\n') {
-                skip(lexer);
-            }
-            skip(lexer);
-            indent_length = 0;
-        } else if (lexer->lookahead == '\\') {
-            if (valid_symbols[LINE_CONTINUATION] && scanner->indents.size == 1) return scan_line_continuation(scanner, lexer);
-            skip(lexer);
-            if (lexer->lookahead == '\r') {
-                skip(lexer);
-            }
-            if (lexer->lookahead == '\n' || lexer->eof(lexer)) {
-                skip(lexer);
-            } else {
-                return false;
-            }
-        } else if (lexer->eof(lexer)) {
-            indent_length = 0;
-            found_end_of_line = true;
-            break;
-        } else {
-            break;
-        }
-    }
-
-    if (found_end_of_line) {
-        if (scanner->indents.size > 0) {
-            uint16_t current_indent_length = *array_back(&scanner->indents);
-
-            if (valid_symbols[INDENT] && indent_length > current_indent_length) {
-                array_push(&scanner->indents, indent_length);
-                lexer->result_symbol = INDENT;
-                return true;
-            }
-
-            bool next_tok_is_string_start =
-                lexer->lookahead == '\"' || lexer->lookahead == '\'' || lexer->lookahead == '`';
-
-            if ((valid_symbols[DEDENT] ||
-                 (!valid_symbols[NEWLINE] && !(valid_symbols[STRING_START] && next_tok_is_string_start) &&
-                  !within_brackets)) &&
-                indent_length < current_indent_length && !scanner->inside_interpolated_string &&
-
-                // Wait to create a dedent token until we've consumed any
-                // comments
-                // whose indentation matches the current block.
-                first_comment_indent_length < (int32_t)current_indent_length) {
-                array_pop(&scanner->indents);
-                lexer->result_symbol = DEDENT;
-                return true;
-            }
-        }
-
-        if (valid_symbols[NEWLINE] && !error_recovery_mode) {
-            lexer->result_symbol = NEWLINE;
-            return true;
-        }
-    }
-
-    if (error_recovery_mode && scan_recovery_marker(scanner, lexer, valid_symbols)) return true;
-    if (!error_recovery_mode && (valid_symbols[PREFIX_HASH] || valid_symbols[MARKER_HASH] || valid_symbols[COMMENT_HASH] || valid_symbols[COMMENT]) && lexer->lookahead == '#' &&
-        scanner->indents.size == 1 && !scanner->delimiters.size && !scanner->bracket_depth && !scanner->continued_line && (lexer->get_column(lexer) == 0 || valid_symbols[COMMENT_HASH]))
-        return scan_prefix_hash(scanner, lexer, valid_symbols, lexer->get_column(lexer) == 0, false, true);
-    if (!error_recovery_mode && lexer->lookahead == '%' &&
-        (valid_symbols[PYTHON_CELL_MAGIC] || valid_symbols[FOREIGN_CELL_MAGIC])) {
-        return scan_cell_magic(scanner, lexer, valid_symbols);
-    }
-
-    if (first_comment_indent_length == -1 && valid_symbols[STRING_START]) {
-        Delimiter delimiter = new_delimiter();
-
-        bool has_flags = false;
-        while (lexer->lookahead) {
-            if (lexer->lookahead == 'f' || lexer->lookahead == 'F' || lexer->lookahead == 't' ||
-                lexer->lookahead == 'T') {
-                set_format(&delimiter);
-            } else if (lexer->lookahead == 'r' || lexer->lookahead == 'R') {
-                set_raw(&delimiter);
-            } else if (lexer->lookahead == 'b' || lexer->lookahead == 'B') {
-                set_bytes(&delimiter);
-            } else if (lexer->lookahead != 'u' && lexer->lookahead != 'U') {
-                break;
-            }
-            has_flags = true;
-            advance(lexer);
-        }
-
-        if (lexer->lookahead == '`') {
-            set_end_character(&delimiter, '`');
-            advance(lexer);
-            lexer->mark_end(lexer);
-        } else if (lexer->lookahead == '\'') {
-            set_end_character(&delimiter, '\'');
-            advance(lexer);
-            lexer->mark_end(lexer);
-            if (lexer->lookahead == '\'') {
-                advance(lexer);
-                if (lexer->lookahead == '\'') {
-                    advance(lexer);
-                    lexer->mark_end(lexer);
-                    set_triple(&delimiter);
-                }
-            }
-        } else if (lexer->lookahead == '"') {
-            set_end_character(&delimiter, '"');
-            advance(lexer);
-            lexer->mark_end(lexer);
-            if (lexer->lookahead == '"') {
-                advance(lexer);
-                if (lexer->lookahead == '"') {
-                    advance(lexer);
-                    lexer->mark_end(lexer);
-                    set_triple(&delimiter);
-                }
-            }
-        }
-
-        if (end_character(&delimiter)) {
-            array_push(&scanner->delimiters, delimiter);
-            lexer->result_symbol = STRING_START;
-            scanner->inside_interpolated_string = is_format(&delimiter);
-            return true;
-        }
-        if (has_flags) {
-            return false;
-        }
-    }
-
-    if (valid_symbols[COMMENT] && lexer->lookahead == '#' && !scanner->delimiters.size) return scan_comment(scanner, lexer);
-    if (!scanner->delimiters.size) {
-        enum TokenType type;
-        bool opening = true;
-        switch (lexer->lookahead) {
-            case '(': type = OPEN_PAREN; break;
-            case '[': type = OPEN_BRACKET; break;
-            case '{': type = OPEN_BRACE; break;
-            case ')': type = CLOSE_PAREN; opening = false; break;
-            case ']': type = CLOSE_BRACKET; opening = false; break;
-            case '}': type = CLOSE_BRACE; opening = false; break;
-            default: return false;
-        }
-        if (!valid_symbols[type]) return false;
-        advance(lexer);
-        lexer->mark_end(lexer);
-        if (opening) ++scanner->bracket_depth;
-        else if (scanner->bracket_depth) --scanner->bracket_depth;
-        lexer->result_symbol = type;
-        return true;
-    }
-    return false;
+void *tree_sitter_ipython_external_scanner_create(void) {
+    Scanner *s = calloc(1, sizeof(Scanner)); assert(s); array_init(&s->frames);
+    s->line_start = s->cell_start = s->statement_start = true; return s;
 }
-
-unsigned tree_sitter_ipython_external_scanner_serialize(void *payload, char *buffer) {
-    Scanner *scanner = (Scanner *)payload;
-
-    size_t size = 0;
-
-    buffer[size++] = (char)scanner->inside_interpolated_string;
-    for (unsigned shift = 0; shift < 32; shift += 8) buffer[size++] = (char)(scanner->bracket_depth >> shift);
-    buffer[size++] = (char)scanner->continued_line;
-    buffer[size++] = (char)scanner->body_line_start;
-    buffer[size++] = (char)scanner->marker_prefix;
-
-    size_t delimiter_count = scanner->delimiters.size;
-    if (delimiter_count > UINT8_MAX) {
-        delimiter_count = UINT8_MAX;
-    }
-    buffer[size++] = (char)delimiter_count;
-
-    if (delimiter_count > 0) {
-        memcpy(&buffer[size], scanner->delimiters.contents, delimiter_count);
-    }
-    size += delimiter_count;
-
-    uint32_t iter = 1;
-    for (; iter < scanner->indents.size && size + 2 <= TREE_SITTER_SERIALIZATION_BUFFER_SIZE; ++iter) {
-        uint16_t indent_value = *array_get(&scanner->indents, iter);
-        buffer[size++] = (char)(indent_value & 0xFF);
-        buffer[size++] = (char)((indent_value >> 8) & 0xFF);
-    }
-
-    return size;
-}
-
-void tree_sitter_ipython_external_scanner_deserialize(void *payload, const char *buffer, unsigned length) {
-    Scanner *scanner = (Scanner *)payload;
-
-    array_delete(&scanner->delimiters);
-    array_delete(&scanner->indents);
-    array_push(&scanner->indents, 0);
-    scanner->body_line_start = true;
-    scanner->marker_prefix = false;
-    scanner->bracket_depth = 0;
-    scanner->continued_line = false;
-
-    if (length > 0) {
-        size_t size = 0;
-
-        scanner->inside_interpolated_string = (bool)buffer[size++];
-        scanner->bracket_depth = 0;
-        for (unsigned shift = 0; shift < 32; shift += 8) scanner->bracket_depth |= (uint32_t)(uint8_t)buffer[size++] << shift;
-        scanner->continued_line = (bool)buffer[size++];
-        scanner->body_line_start = (bool)buffer[size++];
-        scanner->marker_prefix = (bool)buffer[size++];
-
-        size_t delimiter_count = (uint8_t)buffer[size++];
-        if (delimiter_count > 0) {
-            array_reserve(&scanner->delimiters, delimiter_count);
-            scanner->delimiters.size = delimiter_count;
-            memcpy(scanner->delimiters.contents, &buffer[size], delimiter_count);
-            size += delimiter_count;
-        }
-
-        for (; size + 1 < length; size += 2) {
-            uint16_t indent_value = (unsigned char)buffer[size] | ((unsigned char)buffer[size + 1] << 8);
-            array_push(&scanner->indents, indent_value);
-        }
-    }
-}
-
-void *tree_sitter_ipython_external_scanner_create() {
-#if defined(__STDC_VERSION__) && (__STDC_VERSION__ >= 201112L)
-    _Static_assert(sizeof(Delimiter) == sizeof(char), "");
-#else
-    assert(sizeof(Delimiter) == sizeof(char));
-#endif
-    Scanner *scanner = calloc(1, sizeof(Scanner));
-    array_init(&scanner->indents);
-    array_init(&scanner->delimiters);
-    tree_sitter_ipython_external_scanner_deserialize(scanner, NULL, 0);
-    return scanner;
-}
-
 void tree_sitter_ipython_external_scanner_destroy(void *payload) {
-    Scanner *scanner = (Scanner *)payload;
-    array_delete(&scanner->indents);
-    array_delete(&scanner->delimiters);
-    free(scanner);
+    Scanner *s = payload; array_delete(&s->frames); free(s);
 }
+static unsigned write_u32(char *buffer, unsigned offset, uint32_t value) {
+    memcpy(buffer + offset, &value, sizeof(value)); return offset + sizeof(value);
+}
+static uint32_t read_u32(const char *buffer, unsigned *offset) {
+    uint32_t value; memcpy(&value, buffer + *offset, sizeof(value)); *offset += sizeof(value); return value;
+}
+unsigned tree_sitter_ipython_external_scanner_serialize(void *payload, char *buffer) {
+    Scanner *s = payload;
+    uint16_t flags = s->line_start | (s->cell_start << 1) | (s->statement_start << 2) | (s->rhs_ready << 3) |
+        (s->comment_line << 4) | (s->continued_line << 5) | (s->marker_prefix << 6) | (s->command_tail << 7) |
+        (s->help_prefix << 8) | (s->suite_colon << 9) | (s->arguments_active << 10) | (s->conservative << 11);
+    unsigned offset = 0; memcpy(buffer, &flags, 2); offset += 2;
+    buffer[offset++] = s->header_kind; buffer[offset++] = s->recent_length;
+    buffer[offset++] = s->recent[0]; buffer[offset++] = s->recent[1];
+    offset = write_u32(buffer, offset, s->bracket_depth); offset = write_u32(buffer, offset, (uint32_t)s->previous);
+    unsigned count_offset = offset; offset += 2; uint16_t count = 0;
+    for (uint32_t i = 0; i < s->frames.size; i++) {
+        Frame frame = s->frames.contents[i]; unsigned width = 1 + ((frame.flags & FIELD) ? 4 : 0);
+        if (offset + width > TREE_SITTER_SERIALIZATION_BUFFER_SIZE) {
+            flags |= 1 << 11; memcpy(buffer, &flags, 2); break;
+        }
+        buffer[offset++] = (char)frame.flags;
+        if (frame.flags & FIELD) offset = write_u32(buffer, offset, frame.depth);
+        ++count;
+    }
+    memcpy(buffer + count_offset, &count, 2); return offset;
+}
+void tree_sitter_ipython_external_scanner_deserialize(void *payload, const char *buffer, unsigned length) {
+    Scanner *s = payload; s->frames.size = 0; s->bracket_depth = 0; s->previous = 0;
+    s->header_kind = HEADER_NONE; s->recent_length = 0;
+    s->line_start = s->cell_start = s->statement_start = true;
+    s->rhs_ready = s->comment_line = s->continued_line = s->marker_prefix = s->command_tail = false;
+    s->help_prefix = s->suite_colon = s->arguments_active = s->conservative = false;
+    if (!length) return;
+    if (length < 16) return;
+    unsigned offset = 0; uint16_t flags; memcpy(&flags, buffer, 2); offset += 2;
+    s->line_start = flags & 1; s->cell_start = flags & 2; s->statement_start = flags & 4; s->rhs_ready = flags & 8;
+    s->comment_line = flags & 16; s->continued_line = flags & 32; s->marker_prefix = flags & 64; s->command_tail = flags & 128;
+    s->help_prefix = flags & 256; s->suite_colon = flags & 512; s->arguments_active = flags & 1024; s->conservative = flags & 2048;
+    s->header_kind = buffer[offset++]; s->recent_length = buffer[offset++];
+    s->recent[0] = buffer[offset++]; s->recent[1] = buffer[offset++];
+    s->bracket_depth = read_u32(buffer, &offset); s->previous = (int32_t)read_u32(buffer, &offset);
+    uint16_t count; memcpy(&count, buffer + offset, 2); offset += 2;
+    for (uint16_t i = 0; i < count && offset < length; i++) {
+        Frame frame = { .flags = (uint8_t)buffer[offset++] };
+        if (frame.flags & FIELD) { if (offset + 4 > length) break; frame.depth = read_u32(buffer, &offset); }
+        array_push(&s->frames, frame);
+    }
+}
+

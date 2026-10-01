@@ -1,0 +1,98 @@
+==================
+String, bracket and backslash continuation exclude boundaries
+==================
+
+text = """
+# %% [raw] Quoted
+"""
+values = (
+# %% [raw] Continued bracket
+1)
+x = 1\
+# %% [raw] Continued backslash
+# %% [raw] Actual
+payload
+
+---
+
+(module
+  (code_cell
+    (python_cell_body))
+  (raw_cell
+    (cell_marker
+      (cell_marker_marker)
+      (cell_marker_metadata)
+      (cell_marker_name))
+    (cell_body)))
+
+==================
+Nested f-string expressions and same quote strings
+==================
+
+text = rf"""{f"{1}"}
+# %% [raw] Inside string
+"""
+# %% [code] Actual
+value = 1
+
+---
+
+(module
+  (code_cell
+    (python_cell_body))
+  (code_cell
+    (cell_marker
+      (cell_marker_marker)
+      (cell_marker_metadata)
+      (cell_marker_name))
+    (python_cell_body)))
+
+==================
+Python operators and quoted sigils remain opaque Python
+==================
+
+number = 4 % 2
+assert number != 1
+text = "%pwd !echo obj?"
+converted = f"{number!r}"
+mapping = {"name": 1}
+
+---
+
+(module
+  (code_cell
+    (python_cell_body)))
+
+==================
+Incomplete assignment does not swallow reserved headers
+==================
+
+value =
+# %% [markdown] Notes
+# Heading
+# %% [raw]
+raw bytes
+# %% [code]
+good=1
+
+---
+
+(module
+  (code_cell
+    (python_cell_body))
+  (markdown_cell
+    (cell_marker
+      (cell_marker_marker)
+      (cell_marker_metadata)
+      (cell_marker_name))
+    (cell_body))
+  (raw_cell
+    (cell_marker
+      (cell_marker_marker)
+      (cell_marker_metadata))
+    (cell_body))
+  (code_cell
+    (cell_marker
+      (cell_marker_marker)
+      (cell_marker_metadata))
+    (python_cell_body)))

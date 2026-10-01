@@ -1,22 +1,35 @@
-================================================================================
-Literal Markdown and raw bodies preserve following Python
-================================================================================
+==================
+Default Python body is delegated
+==================
+
+def work(value):
+    return {"answer": value}
+broken =
+
+---
+
+(module
+  (code_cell
+    (python_cell_body)))
+
+==================
+Typed cells and explicit code metadata
+==================
 
 before = 1
 # %% [markdown] Notes
 # Heading
-**bold** and `inline`
-# %% [raw] Payload
-anything: <tag> { unclosed
-# %% Code
+**bold**
+# %% [raw] Bytes
+raw <content>
+# %% [code] Code
 after = 2
 
---------------------------------------------------------------------------------
+---
 
 (module
-  (assignment
-    (identifier)
-    (integer))
+  (code_cell
+    (python_cell_body))
   (markdown_cell
     (cell_marker
       (cell_marker_marker)
@@ -29,240 +42,120 @@ after = 2
       (cell_marker_metadata)
       (cell_marker_name))
     (cell_body))
-  (cell_marker
-    (cell_marker_marker)
-    (cell_marker_name))
-  (assignment
-    (identifier)
-    (integer)))
+  (code_cell
+    (cell_marker
+      (cell_marker_marker)
+      (cell_marker_metadata)
+      (cell_marker_name))
+    (python_cell_body)))
 
-================================================================================
-Foreign and custom cell magics have opaque bodies
-================================================================================
+==================
+Bare type spellings remain titles
+==================
 
-%%bash -x
-echo hello
-if true; then
-  echo world
-fi
-# %% HTML
-%%html --isolated
-<h1>Title</h1>
-# %% Extension
-%%custom argument
-not Python at all {
-# %% Python
-value = 3
+# %% md
+x=1
+# %% markdown
+y=2
+# %% raw
+z=3
 
---------------------------------------------------------------------------------
+---
 
 (module
-  (cell_magic
-    (cell_magic_name)
-    (cell_magic_arguments)
-    (cell_body))
-  (cell_marker
-    (cell_marker_marker)
-    (cell_marker_name))
-  (cell_magic
-    (cell_magic_name)
-    (cell_magic_arguments)
-    (cell_body))
-  (cell_marker
-    (cell_marker_marker)
-    (cell_marker_name))
-  (cell_magic
-    (cell_magic_name)
-    (cell_magic_arguments)
-    (cell_body))
-  (cell_marker
-    (cell_marker_marker)
-    (cell_marker_name))
-  (assignment
-    (identifier)
-    (integer)))
+  (code_cell)
+  (code_cell
+    (cell_marker
+      (cell_marker_marker)
+      (cell_marker_name))
+    (python_cell_body))
+  (code_cell
+    (cell_marker
+      (cell_marker_marker)
+      (cell_marker_name))
+    (python_cell_body))
+  (code_cell
+    (cell_marker
+      (cell_marker_marker)
+      (cell_marker_name))
+    (python_cell_body)))
 
-================================================================================
-Python cell magic body contains ordinary Python
-================================================================================
+==================
+Compact legacy annotation markers
+==================
 
-# %% Timing
-%%timeit -n 2
-def work():
-    return 42
-work()
-# %% Next
-answer = 42
+#%%$# Parent
+#%%$$# Child
+#%%$$p!_<;# Full  title
+#$$p# Ordinary
+x=1 #$$v# Inline
 
---------------------------------------------------------------------------------
+---
 
 (module
-  (cell_marker
-    (cell_marker_marker)
-    (cell_marker_name))
-  (cell_magic
-    (cell_magic_name)
-    (cell_magic_arguments)
-    (python_cell_body
-      (function_definition
-        (identifier)
-        (parameters)
-        (block
-          (return_statement
-            (integer))))
-      (call
-        (identifier)
-        (argument_list))))
-  (cell_marker
-    (cell_marker_marker)
-    (cell_marker_name))
-  (assignment
-    (identifier)
-    (integer)))
+  (code_cell)
+  (code_cell
+    (cell_marker
+      (cell_marker_marker)
+      (cell_marker_name)))
+  (code_cell
+    (cell_marker
+      (cell_marker_marker)
+      (cell_marker_name)))
+  (code_cell
+    (cell_marker
+      (cell_marker_marker)
+      (cell_marker_name))
+    (python_cell_body)))
 
-================================================================================
-Assignments from magics and shell preserve assignment fields
-================================================================================
+==================
+Literal fences end at reserved markers
+==================
 
-directory = %pwd
-listing = !ls
-typed: list = !!ls
-timing = %timeit -o work()
-remainder = a % b
-different = a != b
-formatted = f"{value!r}"
+# %% [markdown] First
+~~~python
+not_python = 1
+# %% [markdown] Second
+# Independent heading
 
---------------------------------------------------------------------------------
+---
 
 (module
-  (assignment
-    (identifier)
-    (magic_expression))
-  (assignment
-    (identifier)
-    (shell_expression))
-  (assignment
-    (identifier)
-    (type
-      (identifier))
-    (shell_expression))
-  (assignment
-    (identifier)
-    (magic_expression))
-  (assignment
-    (identifier)
-    (binary_operator
-      (identifier)
-      (identifier)))
-  (assignment
-    (identifier)
-    (comparison_operator
-      (identifier)
-      (identifier)))
-  (assignment
-    (identifier)
-    (string
-      (string_start)
-      (interpolation
-        (identifier)
-        (type_conversion))
-      (string_end))))
+  (code_cell)
+  (markdown_cell
+    (cell_marker
+      (cell_marker_marker)
+      (cell_marker_metadata)
+      (cell_marker_name))
+    (cell_body))
+  (markdown_cell
+    (cell_marker
+      (cell_marker_marker)
+      (cell_marker_metadata)
+      (cell_marker_name))
+    (cell_body)))
 
-================================================================================
-Cell marker lookalikes in strings and brackets do not split cells
-================================================================================
+==================
+Empty cells and EOF header
+==================
 
-text = """
+# %% [raw]
 # %% [markdown]
-"""
-values = [
-# %% [raw]
-1,
-]
-if ready:
-    # %% [markdown]
-    result = 1
-# %% [raw]
-payload
+# %% [code]
 
---------------------------------------------------------------------------------
+---
 
 (module
-  (assignment
-    (identifier)
-    (string
-      (string_start)
-      (string_content)
-      (string_end)))
-  (assignment
-    (identifier)
-    (list
-      (comment)
-      (integer)))
-  (if_statement
-    (identifier)
-    (comment)
-    (block
-      (assignment
-        (identifier)
-        (integer))))
+  (code_cell)
   (raw_cell
     (cell_marker
       (cell_marker_marker)
-      (cell_marker_metadata))
-    (cell_body)))
-
-================================================================================
-Legacy navigation annotations preserve compact marker fields and comments
-================================================================================
-
-#%%$# Parent
-#%%$$#
-#%%$$# Child
-#%%$$p!_<;# Full  title
-#%%$$v+<# Values
-#%%?# Automatic
-#$$p# Plain annotation
-defined = 1 #$$v+<# Inline variable
-class Model: #$$p!_<;# Class annotation
-    pass
-def work(): #$$p# Function annotation
-    pass
-
---------------------------------------------------------------------------------
-
-(module
-  (cell_marker
-    marker: (cell_marker_marker)
-    name: (cell_marker_name))
-  (cell_marker
-    marker: (cell_marker_marker)
-    name: (cell_marker_name))
-  (cell_marker
-    marker: (cell_marker_marker)
-    name: (cell_marker_name))
-  (cell_marker
-    marker: (cell_marker_marker)
-    name: (cell_marker_name))
-  (cell_marker
-    marker: (cell_marker_marker)
-    name: (cell_marker_name))
-  (cell_marker
-    marker: (cell_marker_marker)
-    name: (cell_marker_name))
-  (comment)
-  (assignment
-    left: (identifier)
-    right: (integer))
-  (comment)
-  (class_definition
-    name: (identifier)
-    (comment)
-    body: (block
-      (pass_statement)))
-  (function_definition
-    name: (identifier)
-    parameters: (parameters)
-    (comment)
-    body: (block
-      (pass_statement))))
+      (cell_marker_metadata)))
+  (markdown_cell
+    (cell_marker
+      (cell_marker_marker)
+      (cell_marker_metadata)))
+  (code_cell
+    (cell_marker
+      (cell_marker_marker)
+      (cell_marker_metadata))))

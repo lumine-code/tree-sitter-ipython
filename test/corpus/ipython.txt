@@ -1,253 +1,135 @@
-================================================================================
-IPython line magics
-================================================================================
+==================
+Python wrapper and interpreter body types
+==================
 
-%matplotlib inline
-%timeit f(x)
-%pwd
-
---------------------------------------------------------------------------------
-
-(module
-  (magic_statement)
-  (magic_statement)
-  (magic_statement))
-
-================================================================================
-IPython cell markers
-================================================================================
-
+%%time -q
+value = 1
 # %%
-# %% title
-# %%Title
-# %% [markdown] title
-# %% [markdown]
-#%% compact
-# %%% Sekcja
-# %% markdown Overview
-# %% markdown
-# %% md Short
-# %% MARKDOWN Upper
-# %% markdownish benchmark
-# %% mda title
-# %% mdark title
-# %% mdx title
-# %% [section] title
-# %% [notes]
+%%python3 -u
+value = 2
+# %%
+%%pypy
+value = 3
 
---------------------------------------------------------------------------------
+---
 
 (module
-  (cell_marker
-    marker: (cell_marker_marker))
-  (cell_marker
-    marker: (cell_marker_marker)
-    name: (cell_marker_name))
-  (cell_marker
-    marker: (cell_marker_marker)
-    name: (cell_marker_name))
-  (markdown_cell
-    marker: (cell_marker
-      marker: (cell_marker_marker)
-      metadata: (cell_marker_metadata)
-      name: (cell_marker_name)))
-  (markdown_cell
-    marker: (cell_marker
-      marker: (cell_marker_marker)
-      metadata: (cell_marker_metadata)))
-  (cell_marker
-    marker: (cell_marker_marker)
-    name: (cell_marker_name))
-  (cell_marker
-    marker: (cell_marker_marker)
-    name: (cell_marker_name))
-  (cell_marker
-    marker: (cell_marker_marker)
-    name: (cell_marker_name))
-  (cell_marker
-    marker: (cell_marker_marker)
-    name: (cell_marker_name))
-  (cell_marker
-    marker: (cell_marker_marker)
-    name: (cell_marker_name))
-  (cell_marker
-    marker: (cell_marker_marker)
-    name: (cell_marker_name))
-  (cell_marker
-    marker: (cell_marker_marker)
-    name: (cell_marker_name))
-  (cell_marker
-    marker: (cell_marker_marker)
-    name: (cell_marker_name))
-  (cell_marker
-    marker: (cell_marker_marker)
-    name: (cell_marker_name))
-  (cell_marker
-    marker: (cell_marker_marker)
-    name: (cell_marker_name))
-  (cell_marker
-    marker: (cell_marker_marker)
-    name: (cell_marker_name))
-  (cell_marker
-    marker: (cell_marker_marker)
-    name: (cell_marker_name)))
+  (code_cell
+    (cell_magic
+      (cell_magic_name)
+      (cell_magic_arguments)
+      (python_cell_body)))
+  (code_cell
+    (cell_marker
+      (cell_marker_marker))
+    (cell_magic
+      (cell_magic_name)
+      (cell_magic_arguments)
+      (python_cell_body)))
+  (code_cell
+    (cell_marker
+      (cell_marker_marker))
+    (cell_magic
+      (cell_magic_name)
+      (python_cell_body))))
 
-================================================================================
-IPython cell markers inside blocks
-================================================================================
+==================
+Foreign and unknown magic bodies are opaque
+==================
 
-if x:
-    # %%% Inner
-    y = 1
+%%bash -e
+printf "shell"
+# %%
+%%html
+<h1>html</h1>
+# %%
+%%custom option
+arbitrary <bytes>
 
---------------------------------------------------------------------------------
+---
 
 (module
-  (if_statement
-    condition: (identifier)
-    (comment)
-    consequence: (block
-      (assignment
-        left: (identifier)
-        right: (integer)))))
+  (code_cell
+    (cell_magic
+      (cell_magic_name)
+      (cell_magic_arguments)
+      (cell_body)))
+  (code_cell
+    (cell_marker
+      (cell_marker_marker))
+    (cell_magic
+      (cell_magic_name)
+      (cell_body)))
+  (code_cell
+    (cell_marker
+      (cell_marker_marker))
+    (cell_magic
+      (cell_magic_name)
+      (cell_magic_arguments)
+      (cell_body))))
 
-================================================================================
-Cell marker lookalikes remain comments
-================================================================================
+==================
+Statement magics and exact assignment RHS
+==================
 
-# %
-# ordinary comment
-x = 1 # %%
+if ready: %pwd
+    !echo shell
+?name
+value?
+obj.method??
+x = %pwd
+y: str = !echo result
 
---------------------------------------------------------------------------------
-
-(module
-  (comment)
-  (comment)
-  (assignment
-    (identifier)
-    (integer))
-  (comment))
-
-================================================================================
-IPython cell magics
-================================================================================
-
-%%timeit
-f(x)
-
---------------------------------------------------------------------------------
+---
 
 (module
-  (cell_magic
-    (cell_magic_name)
+  (code_cell
     (python_cell_body
-      (call
-        (identifier)
-        (argument_list
-          (identifier))))))
+      (magic_statement)
+      (shell_statement)
+      (help_statement)
+      (help_statement)
+      (help_statement)
+      (magic_expression)
+      (shell_expression))))
 
-================================================================================
-IPython magics between statements keep neighbors intact
-================================================================================
+==================
+Code or comments before cell magic prevent a header
+==================
 
-a = 1
-%cd ..
-b = 2
+# comment
+%%bash
+echo later
+# %%
+value=1
+%%html
+html later
 
---------------------------------------------------------------------------------
-
-(module
-  (assignment
-    (identifier)
-    (integer))
-  (magic_statement)
-  (assignment
-    (identifier)
-    (integer)))
-
-================================================================================
-IPython magics inside a block
-================================================================================
-
-if x:
-    %time f()
-
---------------------------------------------------------------------------------
+---
 
 (module
-  (if_statement
-    (identifier)
-    (block
+  (code_cell
+    (python_cell_body
+      (magic_statement)))
+  (code_cell
+    (cell_marker
+      (cell_marker_marker))
+    (python_cell_body
       (magic_statement))))
 
-================================================================================
-IPython shell escapes
-================================================================================
+==================
+Blank lines preserve first nonblank cell magic
+==================
 
-!pip install numpy
-!ls -la
 
---------------------------------------------------------------------------------
+  
+%%bash
+echo yes
 
-(module
-  (shell_statement)
-  (shell_statement))
-
-================================================================================
-IPython help requests
-================================================================================
-
-np.mean?
-np.mean??
-?np.mean
-??np.mean
-
---------------------------------------------------------------------------------
+---
 
 (module
-  (help_statement)
-  (help_statement)
-  (help_statement)
-  (help_statement))
-
-================================================================================
-IPython additions leave the modulo operator alone
-================================================================================
-
-c = a % b
-a % b
-
---------------------------------------------------------------------------------
-
-(module
-  (assignment
-    (identifier)
-    (binary_operator
-      (identifier)
-      (identifier)))
-  (binary_operator
-    (identifier)
-    (identifier)))
-
-================================================================================
-IPython additions leave comparisons and f-string conversions alone
-================================================================================
-
-a != b
-x = f"{v!r}"
-
---------------------------------------------------------------------------------
-
-(module
-  (comparison_operator
-    (identifier)
-    (identifier))
-  (assignment
-    (identifier)
-    (string
-      (string_start)
-      (interpolation
-        (identifier)
-        (type_conversion))
-      (string_end))))
+  (code_cell
+    (cell_magic
+      (cell_magic_name)
+      (cell_body))))
