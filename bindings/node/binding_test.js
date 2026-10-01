@@ -254,3 +254,41 @@ test('incremental code edits reuse suffix cells and agree with a fresh scaffold'
   assert.ok(reused > 50, 'Suffix cells remain reusable after an ordinary code edit.');
   assert.equal(incremental.rootNode.toString(), parse(updated).tree.rootNode.toString());
 });
+
+test('one large Python body uses multi-row chunks and reuses its untouched suffix', (context) => {
+  const block = ('# ' + 'x'.repeat(77) + '\n').repeat(16) + 'value = 1\n';
+  const source = block.repeat(Math.ceil(1048576 / block.length)) + 'last_value = 1\n';
+  const parser = new Parser();
+  parser.setLanguage(IPython);
+  let chunks = 0;
+  parser.setLogger((message, data) => {
+    if (message === 'lexed_lookahead' && data.sym === '_python_chunk') chunks++;
+  });
+  const tree = parse(source, parser).tree;
+  parser.setLogger(null);
+  assert.equal(tree.rootNode.namedChildCount, 1);
+  assert.equal(nodes(tree, 'python_cell_body').length, 1);
+  assert.ok(chunks < 512, 'Ordinary comment rows do not create per-line scaffold tokens.');
+  const offset = source.indexOf('value = 1') + 8;
+  tree.edit({
+    startIndex: offset,
+    oldEndIndex: offset + 1,
+    newEndIndex: offset + 1,
+    startPosition: { row: 16, column: 8 },
+    oldEndPosition: { row: 16, column: 9 },
+    newEndPosition: { row: 16, column: 9 },
+  });
+  let reused = 0,
+    lexed = 0;
+  parser.setLogger((message) => {
+    if (message === 'reuse_node') reused++;
+    if (message === 'lexed_lookahead') lexed++;
+  });
+  const updated = source.slice(0, offset) + '2' + source.slice(offset + 1);
+  const incremental = parse(updated, parser, tree).tree;
+  parser.setLogger(null);
+  assert.ok(reused > 5, 'The large body reuses internal repeat subtrees.');
+  assert.ok(lexed < 32, 'An early ordinary edit does not re-lex the whole body.');
+  assert.equal(incremental.rootNode.toString(), parse(updated).tree.rootNode.toString());
+  context.diagnostic(JSON.stringify({ bytes: source.length, pythonChunks: chunks, reused, lexed }));
+});

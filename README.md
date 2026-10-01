@@ -33,7 +33,7 @@ Python bodies contain only hidden source chunks and actual magic_statement, shel
 
 ## Lexical boundaries
 
-Body chunks, commands, names, arguments, marker prefixes and titles consume at most 4096 Unicode codepoints per external token. Long prefixes and suffix-help names continue through hidden tokens; no marker-length limit is imposed. The scanner stores quote, f-string, bracket, physical-line and continuation context, without seeking backwards through a long row. Hidden chunks do not create a public node for every line.
+Body chunks, commands, names, arguments, marker prefixes and titles consume at most 4096 Unicode codepoints per external token. Ordinary comment rows and first words are resolved within multi-row Python chunks; only marker and suffix-help candidates need separate prefix tokens. Long prefixes and suffix-help names continue through hidden tokens; no marker-length limit is imposed. The scanner stores quote, f-string, bracket, physical-line and continuation context, without seeking backwards through a long row. Hidden chunks do not create a public node for every line.
 
 The scaffold deliberately accepts ordinary malformed Python as a Python body. Native Python injections handle Python syntax and may recover around omitted IPython-only statements. The shared analysis projection in language-ipython keeps statement suites and RHS assignments valid for Python tooling without changing source or execution.
 

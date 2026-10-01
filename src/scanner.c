@@ -249,6 +249,59 @@ static bool special_here(Scanner *s, int32_t c) {
 static bool python_chunk(Scanner *s, TSLexer *lexer) {
     uint32_t count = 0;
     while (!lexer->eof(lexer) && count < CHUNK_LIMIT) {
+        // Most column-zero comments are ordinary Python. Resolve a short
+        // prefix inside this multi-row chunk instead of creating three
+        // tokens and a speculative cell-header branch for every comment.
+        if (boundary(s) && lexer->lookahead == '#') {
+            Scanner saved = *s;
+            uint32_t probe = 0;
+            lexer->mark_end(lexer);
+            take(s, lexer, &probe);
+            if (!count) lexer->mark_end(lexer); // Shared prefix token is just '#'.
+            while (horizontal(lexer->lookahead) && count + probe < CHUNK_LIMIT)
+                take(s, lexer, &probe);
+            bool possible = horizontal(lexer->lookahead);
+            if (lexer->lookahead == '%') {
+                if (count + probe == CHUNK_LIMIT) possible = true;
+                else {
+                    take(s, lexer, &probe);
+                    possible = lexer->lookahead == '%';
+                }
+            }
+            if (possible) {
+                *s = saved;
+                if (count) { lexer->result_symbol = PYTHON_CHUNK; return true; }
+                s->line_start = false; s->marker_prefix = true; s->comment_line = true;
+                s->statement_start = false; s->cell_start = false; s->rhs_ready = false;
+                lexer->result_symbol = PREFIX_HASH; return true;
+            }
+            count += probe;
+            s->marker_prefix = false; s->comment_line = true; s->cell_start = false;
+            s->statement_start = false; s->rhs_ready = false; s->help_prefix = false;
+            continue;
+        }
+        // A normal first word needs no scaffold token. Only a suffix-help
+        // candidate, or an unfinished giant name, uses the shared prefix rule.
+        if (outside(s) && !s->bracket_depth && !s->comment_line && !s->continued_line &&
+            s->statement_start && identifier_start(lexer->lookahead)) {
+            Scanner saved = *s;
+            uint32_t probe = 0; char word[16] = {0};
+            lexer->mark_end(lexer);
+            while (identifier_part(lexer->lookahead) && count + probe < CHUNK_LIMIT) {
+                if (probe < sizeof(word)-1 && lexer->lookahead < 128) word[probe] = (char)lexer->lookahead;
+                recent(s, lexer->lookahead); s->previous = lexer->lookahead;
+                take(s, lexer, &probe);
+            }
+            if (lexer->lookahead == '?' || identifier_part(lexer->lookahead)) {
+                if (count) { *s = saved; lexer->result_symbol = PYTHON_CHUNK; return true; }
+                s->help_prefix = true; s->cell_start = false; s->statement_start = false; s->rhs_ready = false;
+                return finish(lexer, HELP_PREFIX_CHUNK, probe);
+            }
+            count += probe;
+            s->suite_colon = probe < sizeof(word) && suite_keyword(word);
+            s->cell_start = false; s->statement_start = false; s->rhs_ready = false; s->help_prefix = false;
+            continue;
+        }
         if (special_here(s, lexer->lookahead)) break;
         if (count && CHUNK_LIMIT - count < 3 &&
             (lexer->lookahead == '\'' || lexer->lookahead == '"' || lexer->lookahead == '\\' ||
@@ -327,6 +380,7 @@ bool tree_sitter_ipython_external_scanner_scan(void *payload, TSLexer *lexer, co
         }
         if (count) return finish(lexer, CELL_BODY_CHUNK, count);
     }
+    if (valid[PYTHON_CHUNK] && boundary(s) && lexer->lookahead == '#') return python_chunk(s, lexer);
     if ((valid[PREFIX_HASH] || valid[BODY_HASH]) && lexer->lookahead == '#' &&
         ((valid[CELL_BODY_CHUNK] && s->line_start) || boundary(s))) {
         uint32_t count = 0; take(s, lexer, &count);
@@ -359,7 +413,7 @@ bool tree_sitter_ipython_external_scanner_scan(void *payload, TSLexer *lexer, co
             s->cell_start = false; s->statement_start = false; s->rhs_ready = false; s->command_tail = true; s->help_prefix = false;
             return line_chunk(s, lexer, type, 0, false);
         }
-        if (s->statement_start && valid[HELP_PREFIX_CHUNK] && identifier_start(lexer->lookahead)) return identifier_prefix(s, lexer);
+        if (s->statement_start && valid[PYTHON_CHUNK] && identifier_start(lexer->lookahead)) return python_chunk(s, lexer);
     }
     if (valid[PYTHON_CHUNK]) return python_chunk(s, lexer);
     return false;
