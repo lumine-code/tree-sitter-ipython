@@ -6,7 +6,7 @@
 #include <string.h>
 
 enum TokenType {
-    PREFIX_HASH, BODY_HASH, PREFIX_SPACE, PREFIX_PERCENT_START, PREFIX_PERCENT_MORE,
+    PREFIX_HASH, MARKER_HASH, BODY_HASH, PREFIX_SPACE, PREFIX_PERCENT_START, PREFIX_PERCENT_MORE,
     HEADER_SPACE, TITLE_SPACE, TRAILING_SPACE, UNCERTAIN_SPACE,
     MARKDOWN_CELL_TYPE, RAW_CELL_TYPE, CODE_CELL_TYPE, HEADER_TITLE_CHUNK, CELL_HEADER_END,
     PYTHON_CELL_MAGIC, FOREIGN_CELL_MAGIC, MAGIC_NAME_CHUNK, ARGUMENTS_CHUNK,
@@ -246,7 +246,7 @@ static bool special_here(Scanner *s, int32_t c) {
         (s->rhs_ready && (c == '%' || c == '!')) || (s->help_prefix && c == '?') ||
         (boundary(s) && c == '#');
 }
-static bool python_chunk(Scanner *s, TSLexer *lexer) {
+static bool python_chunk(Scanner *s, TSLexer *lexer, const bool *valid) {
     uint32_t count = 0;
     while (!lexer->eof(lexer) && count < CHUNK_LIMIT) {
         // Most column-zero comments are ordinary Python. Resolve a short
@@ -273,7 +273,9 @@ static bool python_chunk(Scanner *s, TSLexer *lexer) {
                 if (count) { lexer->result_symbol = PYTHON_CHUNK; return true; }
                 s->line_start = false; s->marker_prefix = true; s->comment_line = true;
                 s->statement_start = false; s->cell_start = false; s->rhs_ready = false;
-                lexer->result_symbol = PREFIX_HASH; return true;
+                enum TokenType type = probe < CHUNK_LIMIT && lexer->lookahead == '%' ? MARKER_HASH : PREFIX_HASH;
+                if (!valid[type]) { *s = saved; return false; }
+                lexer->result_symbol = type; return true;
             }
             count += probe;
             s->marker_prefix = false; s->comment_line = true; s->cell_start = false;
@@ -380,12 +382,26 @@ bool tree_sitter_ipython_external_scanner_scan(void *payload, TSLexer *lexer, co
         }
         if (count) return finish(lexer, CELL_BODY_CHUNK, count);
     }
-    if (valid[PYTHON_CHUNK] && boundary(s) && lexer->lookahead == '#') return python_chunk(s, lexer);
-    if ((valid[PREFIX_HASH] || valid[BODY_HASH]) && lexer->lookahead == '#' &&
+    if (valid[PYTHON_CHUNK] && boundary(s) && lexer->lookahead == '#') return python_chunk(s, lexer, valid);
+    if ((valid[PREFIX_HASH] || valid[MARKER_HASH] || valid[BODY_HASH]) && lexer->lookahead == '#' &&
         ((valid[CELL_BODY_CHUNK] && s->line_start) || boundary(s))) {
-        uint32_t count = 0; take(s, lexer, &count);
+        Scanner before = *s;
+        uint32_t count = 0; take(s, lexer, &count); lexer->mark_end(lexer);
+        Scanner saved = *s;
+        while (horizontal(lexer->lookahead) && count < CHUNK_LIMIT) take(s, lexer, &count);
+        bool uncertain = count == CHUNK_LIMIT;
+        bool known_marker = false;
+        if (!uncertain && lexer->lookahead == '%') {
+            take(s, lexer, &count);
+            known_marker = lexer->lookahead == '%';
+            uncertain = count == CHUNK_LIMIT && !known_marker;
+        }
+        *s = saved;
         s->marker_prefix = true; s->comment_line = true; s->statement_start = false; s->cell_start = false;
-        return finish(lexer, PREFIX_HASH, count);
+        enum TokenType type = known_marker ? MARKER_HASH : uncertain ? PREFIX_HASH : BODY_HASH;
+        if (!valid[type]) { *s = before; return false; }
+        lexer->result_symbol = type;
+        return true;
     }
     if (valid[CELL_BODY_CHUNK]) return false;
     if (valid[PADDING_CHUNK] && s->cell_start && (horizontal(lexer->lookahead) || newline(lexer->lookahead) || lexer->lookahead == '\f')) {
@@ -413,9 +429,9 @@ bool tree_sitter_ipython_external_scanner_scan(void *payload, TSLexer *lexer, co
             s->cell_start = false; s->statement_start = false; s->rhs_ready = false; s->command_tail = true; s->help_prefix = false;
             return line_chunk(s, lexer, type, 0, false);
         }
-        if (s->statement_start && valid[PYTHON_CHUNK] && identifier_start(lexer->lookahead)) return python_chunk(s, lexer);
+        if (s->statement_start && valid[PYTHON_CHUNK] && identifier_start(lexer->lookahead)) return python_chunk(s, lexer, valid);
     }
-    if (valid[PYTHON_CHUNK]) return python_chunk(s, lexer);
+    if (valid[PYTHON_CHUNK]) return python_chunk(s, lexer, valid);
     return false;
 }
 void *tree_sitter_ipython_external_scanner_create(void) {
@@ -475,4 +491,3 @@ void tree_sitter_ipython_external_scanner_deserialize(void *payload, const char 
         array_push(&s->frames, frame);
     }
 }
-

@@ -6,7 +6,7 @@ module.exports = grammar({
   name: 'ipython',
   extras: _ => [],
   externals: $ => [
-    $._prefix_hash, $._body_hash, $._prefix_space,
+    $._prefix_hash, $._marker_hash, $._body_hash, $._prefix_space,
     $._prefix_percent_start, $._prefix_percent_more,
     $._header_space, $._title_space, $._trailing_space, $._uncertain_space,
     $._markdown_cell_type, $._raw_cell_type, $._code_cell_type,
@@ -18,8 +18,9 @@ module.exports = grammar({
     $._help_prefix_chunk, $._help_suffix, $._document_end,
   ],
   conflicts: $ => [
+    [$._initial_padding_before_marker, $._initial_code_cell, $.python_cell_body],
     [$.code_cell], [$.python_cell_body], [$.cell_body],
-    [$._initial_code_cell, $.python_cell_body], [$.code_cell, $.python_cell_body],
+    [$.code_cell, $.python_cell_body],
     [$.python_cell_body, $.help_statement],
     [$.markdown_cell], [$.raw_cell], [$.cell_magic],
     [$.cell_marker_name],
@@ -27,14 +28,18 @@ module.exports = grammar({
   ],
   rules: {
     module: $ => seq(
-      optional(alias($._initial_code_cell, $.code_cell)),
+      optional(choice(
+        alias($._initial_code_cell, $.code_cell),
+        seq(alias($._initial_padding_before_marker, $.code_cell),
+          choice($.code_cell, $.markdown_cell, $.raw_cell)),
+      )),
       repeat(choice($.code_cell, $.markdown_cell, $.raw_cell)),
       $._document_end,
     ),
+    _initial_padding_before_marker: $ => prec.dynamic(1, repeat1($._padding_chunk)),
     _initial_code_cell: $ => choice(
       field('body', $.python_cell_body),
       seq(repeat($._padding_chunk), field('body', $.cell_magic)),
-      repeat1($._padding_chunk),
     ),
     code_cell: $ => seq(
       field('marker', $.cell_marker), $._cell_header_end,
@@ -77,7 +82,7 @@ module.exports = grammar({
     magic_expression: $ => seq($._magic_expression_start, repeat($._command_tail)),
     shell_expression: $ => seq($._shell_expression_start, repeat($._command_tail)),
     cell_marker_marker: $ => seq(
-      $._prefix_hash, repeat($._prefix_space), $._prefix_percent_start, repeat($._prefix_percent_more),
+      choice($._prefix_hash, $._marker_hash), repeat($._prefix_space), $._prefix_percent_start, repeat($._prefix_percent_more),
     ),
     cell_marker: $ => choice(
       seq(field('marker', $.cell_marker_marker), optional(seq(
@@ -107,4 +112,3 @@ module.exports = grammar({
     ))),
   },
 });
-

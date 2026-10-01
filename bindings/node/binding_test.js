@@ -4,7 +4,7 @@ const path = require('node:path');
 const { test } = require('node:test');
 const Parser = require('tree-sitter');
 const IPython = require('.');
-test('external scanner reset and inactive prefix bytes are canonical', () => {
+test('external scanner state is canonical and hash tokens respect valid symbols', () => {
   const executable = path.resolve(
     __dirname,
     '../../build/Release/scanner_state_test' + (process.platform === 'win32' ? '.exe' : ''),
@@ -260,6 +260,82 @@ test('incremental code edits reuse suffix cells and agree with a fresh scaffold'
   parser.setLogger(null);
   assert.ok(reused > 50, 'Suffix cells remain reusable after an ordinary code edit.');
   assert.equal(incremental.rootNode.toString(), parse(updated).tree.rootNode.toString());
+});
+
+test('mixed cells keep reusable boundaries for EOF, opaque and identifier edits', (context) => {
+  const count = 100;
+  const source =
+    Array.from({ length: count }, (_, index) => {
+      switch (index % 5) {
+        case 0:
+          return '# %% Code ' + index + '\nvalue_' + index + ' = 1\n';
+        case 1:
+          return '# %% [markdown] Notes ' + index + '\nFOREIGN_MARKDOWN **😀**\n';
+        case 2:
+          return '# %% [raw] Data ' + index + '\nFOREIGN_RAW <bytes>\n';
+        case 3:
+          return '# %% Shell ' + index + '\n%%bash -e\necho FOREIGN_SHELL\n';
+        default:
+          return '# %% Timed ' + index + '\n%%time -q\nvalue_' + index + ' = !x\n%pwd\n';
+      }
+    }).join('') + '# %% Final\nlast_value = 1\n';
+  const controls = [
+    ['EOF code', source.indexOf('last_value = 1') + 'last_value = '.length, '2'],
+    ['initial identifier', source.indexOf('value_0'), 'x'],
+    ['Markdown body', source.indexOf('FOREIGN_MARKDOWN') + 1, 'x'],
+    ['raw body', source.indexOf('FOREIGN_RAW') + 1, 'x'],
+    ['EOF marker title', source.indexOf('# %% Final') + '# %% Fina'.length, 'L'],
+  ];
+  const point = (index) => ({
+    row: source.slice(0, index).split('\n').length - 1,
+    column: index - source.lastIndexOf('\n', index - 1) - 1,
+  });
+  const geometry = (tree) => {
+    const result = [];
+    const pending = [tree.rootNode];
+    while (pending.length) {
+      const node = pending.pop();
+      result.push([
+        node.type,
+        node.text,
+        node.startIndex,
+        node.endIndex,
+        node.startPosition,
+        node.endPosition,
+        node.isNamed,
+        node.isExtra,
+        node.childCount,
+      ]);
+      for (let child = node.childCount - 1; child >= 0; --child) pending.push(node.child(child));
+    }
+    return result;
+  };
+  for (const [operation, offset, replacement] of controls) {
+    const { parser, tree } = parse(source);
+    tree.edit({
+      startIndex: offset,
+      oldEndIndex: offset + 1,
+      newEndIndex: offset + 1,
+      startPosition: point(offset),
+      oldEndPosition: point(offset + 1),
+      newEndPosition: point(offset + 1),
+    });
+    let reused = 0,
+      lexed = 0;
+    parser.setLogger((message) => {
+      if (message === 'reuse_node') ++reused;
+      if (message === 'lexed_lookahead') ++lexed;
+    });
+    const updated = source.slice(0, offset) + replacement + source.slice(offset + 1);
+    const incremental = parse(updated, parser, tree).tree;
+    parser.setLogger(null);
+    assert.ok(reused > count, operation + ': untouched cell nodes remain reusable.');
+    assert.ok(lexed < count * 4, operation + ': known markers do not re-lex every scaffold token.');
+    const fresh = parse(updated).tree;
+    assert.equal(incremental.rootNode.toString(), fresh.rootNode.toString());
+    assert.deepEqual(geometry(incremental), geometry(fresh));
+    context.diagnostic(JSON.stringify({ operation, reused, lexed }));
+  }
 });
 
 test('one large Python body uses multi-row chunks and reuses its untouched suffix', (context) => {
