@@ -54,7 +54,7 @@ Raw magic arguments and unknown options stay opaque
 %run -i "my script.py"
 %custom factory()
 %timeit -x factory()
-%debug --unknown factory()
+%timeit --unknown factory()
 
 ---
 

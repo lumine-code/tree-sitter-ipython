@@ -232,6 +232,8 @@ test('separates Python line magic names, options and executable statements', () 
     ['%debug --break="my file.py:10" factory()', 'debug', '--break="my file.py:10" ', 'factory()'],
     ['%debug -value', 'debug', null, '-value'],
     ['%debug -1', 'debug', null, '-1'],
+    ['%debug --value', 'debug', null, '--value'],
+    ['%debug -b file.py:10 --value', 'debug', '-b file.py:10 ', '--value'],
     ['%debug -b file.py:10 -value', 'debug', '-b file.py:10 ', '-value'],
     [
       '%debug --breakpoint="my file.py:10" factory()',
@@ -270,7 +272,7 @@ test('keeps non-Python magics and unknown or unfinished options opaque', () => {
     '%timeitcustom factory()',
     '%timeit -x factory()',
     '%prun --unknown factory()',
-    '%debug --unknown factory()',
+    '%timeit --unknown factory()',
     '%timeit -n',
     '%debug -b "unfinished factory()',
   ]) {

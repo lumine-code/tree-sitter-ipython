@@ -275,19 +275,23 @@ static bool cell_magic(Scanner *s, TSLexer *lexer, const bool *valid) {
     lexer->result_symbol = type; return true;
 }
 static bool short_option(Scanner *s, int32_t c, bool *value) {
-    const char *flags = s->magic_kind == MAGIC_TIMEIT ? "tcqo" : s->magic_kind == MAGIC_PRUN ? "rq" : "";
-    const char *values = s->magic_kind == MAGIC_TIMEIT ? "nrpv" : s->magic_kind == MAGIC_PRUN ? "DlsT" :
-        s->magic_kind == MAGIC_DEBUG ? "b" : "";
-    if (c <= 0 || c >= 128) return false;
-    *value = strchr(values, (char)c) != NULL;
-    return *value || strchr(flags, (char)c) != NULL;
+    *value = s->magic_kind == MAGIC_TIMEIT ? c == 'n' || c == 'r' || c == 'p' || c == 'v' :
+        s->magic_kind == MAGIC_PRUN ? c == 'D' || c == 'l' || c == 's' || c == 'T' :
+        s->magic_kind == MAGIC_DEBUG && c == 'b';
+    return *value || (s->magic_kind == MAGIC_TIMEIT && (c == 't' || c == 'c' || c == 'q' || c == 'o')) ||
+        (s->magic_kind == MAGIC_PRUN && (c == 'r' || c == 'q'));
+}
+static bool breakpoint_option(const char *name, uint8_t length) {
+    const char *expected = "breakpoint";
+    if (!length || length > 10) return false;
+    for (uint8_t i = 0; i < length; ++i) if (name[i] != expected[i]) return false;
+    return true;
 }
 static bool long_option(Scanner *s, bool attached) {
     if (s->magic_kind == MAGIC_TIME && !strcmp(s->option_text, "no-raise-error") && !attached) {
         s->option_pending = false; return true;
     }
-    if (s->magic_kind == MAGIC_DEBUG && s->option_length &&
-        !strncmp("breakpoint", s->option_text, s->option_length)) {
+    if (s->magic_kind == MAGIC_DEBUG && breakpoint_option(s->option_text, s->option_length)) {
         s->option_pending = true; return true;
     }
     return false;
@@ -365,15 +369,31 @@ static bool magic_arguments(Scanner *s, TSLexer *lexer, enum TokenType type, boo
                 if (s->magic_kind == MAGIC_DEBUG) {
                     Scanner saved = *s; uint32_t before = count; lexer->mark_end(lexer);
                     take(s, lexer, &count);
-                    if (lexer->lookahead != 'b' && lexer->lookahead != '-') {
-                        // Partial argparse parsing leaves unrecognized short
-                        // options as code; they can be unary Python operators.
+                    bool known = lexer->lookahead == 'b';
+                    if (lexer->lookahead == '-') {
+                        take(s, lexer, &count);
+                        while (s->option_length < 11 && !lexer->eof(lexer) && !newline(lexer->lookahead) &&
+                            !horizontal(lexer->lookahead) && lexer->lookahead != '=') {
+                            s->option_text[s->option_length++] = lexer->lookahead < 128 ? (char)lexer->lookahead : '\1';
+                            take(s, lexer, &count);
+                        }
+                        bool delimited = lexer->eof(lexer) || newline(lexer->lookahead) ||
+                            horizontal(lexer->lookahead) || lexer->lookahead == '=';
+                        known = delimited && (breakpoint_option(s->option_text, s->option_length) ||
+                            (!s->option_length && lexer->lookahead != '='));
+                        s->option_mode = OPTION_LONG;
+                    } else s->option_mode = OPTION_DASH;
+                    if (!known) {
+                        // Partial argparse parsing leaves unknown options as
+                        // code, including unary '-' and double unary '--'.
                         s->magic_phase = MAGIC_PYTHON;
+                        s->option_mode = OPTION_NONE; s->option_length = 0;
+                        memset(s->option_text, 0, sizeof(s->option_text));
                         if (!before) return python_valid && line_chunk(s, lexer, PYTHON_MAGIC_BODY_CHUNK, count, false);
                         *s = saved; s->magic_phase = MAGIC_PYTHON; s->arguments_active = true;
                         lexer->result_symbol = type; return true;
                     }
-                    s->option_mode = OPTION_DASH; continue;
+                    continue;
                 }
                 s->option_mode = OPTION_DASH; take(s, lexer, &count); continue;
             } else { s->magic_phase = MAGIC_PYTHON; break; }
