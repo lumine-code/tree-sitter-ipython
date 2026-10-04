@@ -398,6 +398,22 @@
                           "type": "BLANK"
                         }
                       ]
+                    },
+                    {
+                      "type": "CHOICE",
+                      "members": [
+                        {
+                          "type": "FIELD",
+                          "name": "setup",
+                          "content": {
+                            "type": "SYMBOL",
+                            "name": "python_magic_body"
+                          }
+                        },
+                        {
+                          "type": "BLANK"
+                        }
+                      ]
                     }
                   ]
                 },
@@ -476,6 +492,22 @@
                           "type": "BLANK"
                         }
                       ]
+                    },
+                    {
+                      "type": "CHOICE",
+                      "members": [
+                        {
+                          "type": "FIELD",
+                          "name": "setup",
+                          "content": {
+                            "type": "SYMBOL",
+                            "name": "python_magic_body"
+                          }
+                        },
+                        {
+                          "type": "BLANK"
+                        }
+                      ]
                     }
                   ]
                 },
@@ -522,19 +554,93 @@
         "name": "_arguments_chunk"
       }
     },
+    "line_magic_name": {
+      "type": "REPEAT1",
+      "content": {
+        "type": "SYMBOL",
+        "name": "_line_magic_name_chunk"
+      }
+    },
+    "line_magic_arguments": {
+      "type": "REPEAT1",
+      "content": {
+        "type": "SYMBOL",
+        "name": "_line_magic_arguments_chunk"
+      }
+    },
+    "python_magic_body": {
+      "type": "REPEAT1",
+      "content": {
+        "type": "SYMBOL",
+        "name": "_python_magic_body_chunk"
+      }
+    },
     "magic_statement": {
       "type": "SEQ",
       "members": [
         {
-          "type": "SYMBOL",
-          "name": "_magic_statement_start"
+          "type": "ALIAS",
+          "content": {
+            "type": "SYMBOL",
+            "name": "_magic_statement_start"
+          },
+          "named": false,
+          "value": "%"
+        },
+        {
+          "type": "CHOICE",
+          "members": [
+            {
+              "type": "FIELD",
+              "name": "name",
+              "content": {
+                "type": "SYMBOL",
+                "name": "line_magic_name"
+              }
+            },
+            {
+              "type": "BLANK"
+            }
+          ]
         },
         {
           "type": "REPEAT",
           "content": {
             "type": "SYMBOL",
-            "name": "_command_tail"
+            "name": "_line_magic_space"
           }
+        },
+        {
+          "type": "CHOICE",
+          "members": [
+            {
+              "type": "FIELD",
+              "name": "arguments",
+              "content": {
+                "type": "SYMBOL",
+                "name": "line_magic_arguments"
+              }
+            },
+            {
+              "type": "BLANK"
+            }
+          ]
+        },
+        {
+          "type": "CHOICE",
+          "members": [
+            {
+              "type": "FIELD",
+              "name": "body",
+              "content": {
+                "type": "SYMBOL",
+                "name": "python_magic_body"
+              }
+            },
+            {
+              "type": "BLANK"
+            }
+          ]
         }
       ]
     },
@@ -595,15 +701,68 @@
       "type": "SEQ",
       "members": [
         {
-          "type": "SYMBOL",
-          "name": "_magic_expression_start"
+          "type": "ALIAS",
+          "content": {
+            "type": "SYMBOL",
+            "name": "_magic_expression_start"
+          },
+          "named": false,
+          "value": "%"
+        },
+        {
+          "type": "CHOICE",
+          "members": [
+            {
+              "type": "FIELD",
+              "name": "name",
+              "content": {
+                "type": "SYMBOL",
+                "name": "line_magic_name"
+              }
+            },
+            {
+              "type": "BLANK"
+            }
+          ]
         },
         {
           "type": "REPEAT",
           "content": {
             "type": "SYMBOL",
-            "name": "_command_tail"
+            "name": "_line_magic_space"
           }
+        },
+        {
+          "type": "CHOICE",
+          "members": [
+            {
+              "type": "FIELD",
+              "name": "arguments",
+              "content": {
+                "type": "SYMBOL",
+                "name": "line_magic_arguments"
+              }
+            },
+            {
+              "type": "BLANK"
+            }
+          ]
+        },
+        {
+          "type": "CHOICE",
+          "members": [
+            {
+              "type": "FIELD",
+              "name": "body",
+              "content": {
+                "type": "SYMBOL",
+                "name": "python_magic_body"
+              }
+            },
+            {
+              "type": "BLANK"
+            }
+          ]
         }
       ]
     },
@@ -1104,6 +1263,22 @@
     {
       "type": "SYMBOL",
       "name": "_arguments_chunk"
+    },
+    {
+      "type": "SYMBOL",
+      "name": "_line_magic_name_chunk"
+    },
+    {
+      "type": "SYMBOL",
+      "name": "_line_magic_space"
+    },
+    {
+      "type": "SYMBOL",
+      "name": "_line_magic_arguments_chunk"
+    },
+    {
+      "type": "SYMBOL",
+      "name": "_python_magic_body_chunk"
     },
     {
       "type": "SYMBOL",

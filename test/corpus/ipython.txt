@@ -85,12 +85,14 @@ y: str = !echo result
 (module
   (code_cell
     (python_cell_body
-      (magic_statement)
+      (magic_statement
+        (line_magic_name))
       (shell_statement)
       (help_statement)
       (help_statement)
       (help_statement)
-      (magic_expression)
+      (magic_expression
+        (line_magic_name))
       (shell_expression))))
 
 ==================
@@ -110,12 +112,14 @@ html later
 (module
   (code_cell
     (python_cell_body
-      (magic_statement)))
+      (magic_statement
+        (line_magic_arguments))))
   (code_cell
     (cell_marker
       (cell_marker_marker))
     (python_cell_body
-      (magic_statement))))
+      (magic_statement
+        (line_magic_arguments)))))
 
 ==================
 Blank lines preserve first nonblank cell magic

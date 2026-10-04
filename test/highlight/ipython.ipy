@@ -1,11 +1,13 @@
 %matplotlib inline
-# <- function.macro
+# <- operator
+#  ^ function.builtin
+#            ^ string
 
 !ls -la
 # <- string.special
 
 np.mean?
-# <- operator
+# <- keyword
 
 # %% [markdown] title
 # ^ comment

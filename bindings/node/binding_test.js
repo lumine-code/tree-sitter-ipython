@@ -200,6 +200,170 @@ test('preserves exact statement, suffix-help and assignment RHS spans', () => {
     ['!echo result'],
   );
 });
+
+test('separates Python line magic names, options and executable statements', () => {
+  const cases = [
+    ['%timeit prs.spt(9)', 'timeit', null, 'prs.spt(9)'],
+    [
+      '%timeit -n100 -r 3 -p2 -v0.1 -tcqo factory()',
+      'timeit',
+      '-n100 -r 3 -p2 -v0.1 -tcqo ',
+      'factory()',
+    ],
+    ['%timeit -qr3 factory()', 'timeit', '-qr3 ', 'factory()'],
+    ['%timeit -- -value', 'timeit', '-- ', '-value'],
+    ['%timeit print("-q", 1)', 'timeit', null, 'print("-q", 1)'],
+    ['%time --no-raise-error factory()', 'time', '--no-raise-error ', 'factory()'],
+    [
+      '%time --no-raise-error --no-raise-error factory()',
+      'time',
+      '--no-raise-error --no-raise-error ',
+      'factory()',
+    ],
+    ['%time -value', 'time', null, '-value'],
+    ['%time -1', 'time', null, '-1'],
+    [
+      '%prun -Dprofile.dump -l 10 -s cumulative -T "profile results.txt" -rq factory()',
+      'prun',
+      '-Dprofile.dump -l 10 -s cumulative -T "profile results.txt" -rq ',
+      'factory()',
+    ],
+    ['%debug -b "my file.py:10" factory()', 'debug', '-b "my file.py:10" ', 'factory()'],
+    ['%debug --break="my file.py:10" factory()', 'debug', '--break="my file.py:10" ', 'factory()'],
+    ['%debug -value', 'debug', null, '-value'],
+    ['%debug -1', 'debug', null, '-1'],
+    ['%debug -b file.py:10 -value', 'debug', '-b file.py:10 ', '-value'],
+    [
+      '%debug --breakpoint="my file.py:10" factory()',
+      'debug',
+      '--breakpoint="my file.py:10" ',
+      'factory()',
+    ],
+    ['%config Foo.bar = [1, 2]', 'config', null, 'Foo.bar = [1, 2]'],
+    ['%time values = !echo hi', 'time', null, 'values = !echo hi'],
+    ['%time np.mean?', 'time', null, 'np.mean?'],
+    ['%timeit %time factory()', 'timeit', null, '%time factory()'],
+  ];
+  for (const [source, name, args, body] of cases) {
+    const { tree } = parse(source + '\r\n');
+    const node = nodes(tree, 'magic_statement')[0];
+    assert.equal(node.text, source);
+    assert.equal(node.child(0).type, '%');
+    assert.equal(node.child(0).text, '%');
+    assert.equal(node.childForFieldName('name').text, name);
+    assert.equal(node.childForFieldName('arguments')?.text ?? null, args, source);
+    assert.equal(node.childForFieldName('body')?.text ?? null, body, source);
+    assert.deepEqual(node.endPosition, { row: 0, column: source.length });
+    const rhs = nodes(parse('result = ' + source + '\n').tree, 'magic_expression')[0];
+    assert.equal(rhs.text, source);
+    assert.equal(rhs.childForFieldName('body')?.text ?? null, body);
+  }
+});
+
+test('keeps non-Python magics and unknown or unfinished options opaque', () => {
+  for (const source of [
+    '%matplotlib inline',
+    '%run -i "my script.py"',
+    '%pinfo object.*',
+    '%pfile "my file.py"',
+    '%custom factory()',
+    '%timeitcustom factory()',
+    '%timeit -x factory()',
+    '%prun --unknown factory()',
+    '%debug --unknown factory()',
+    '%timeit -n',
+    '%debug -b "unfinished factory()',
+  ]) {
+    const { tree } = parse(source + '\n# %% Next\nx=1\n');
+    const node = nodes(tree, 'magic_statement')[0];
+    assert.equal(node.text, source);
+    assert.equal(node.childForFieldName('body'), null, source);
+    assert.deepEqual(markerNames(tree), ['Next']);
+  }
+  for (const source of ['%', '%%', '%   ']) {
+    const node = nodes(parse(source + '\n').tree, 'magic_statement')[0];
+    assert.equal(node.text, source);
+    assert.equal(node.childForFieldName('name'), null);
+  }
+});
+
+test('separates cell setup statements while leaving non-code headers opaque', () => {
+  for (const [header, name, args, setup] of [
+    ['%%timeit -n1 setup = 1', 'timeit', '-n1 ', 'setup = 1'],
+    ['%%timeit setup = 1', 'timeit', null, 'setup = 1'],
+    ['%%prun -q prepare()', 'prun', '-q ', 'prepare()'],
+    [
+      '%%debug --breakpoint="my file.py:10" prepare()',
+      'debug',
+      '--breakpoint="my file.py:10" ',
+      'prepare()',
+    ],
+    ['%%time --no-raise-error', 'time', '--no-raise-error', null],
+    ['%%capture output --no-stderr', 'capture', 'output --no-stderr', null],
+    ['%%code_wrap wrapper', 'code_wrap', 'wrapper', null],
+    ['%%bash -e', 'bash', '-e', null],
+    ['%%custom option', 'custom', 'option', null],
+  ]) {
+    const source = header + '\r\nprint(1)\r\n# %% Next\nx=1\n';
+    const node = nodes(parse(source).tree, 'cell_magic')[0];
+    assert.equal(node.childForFieldName('name').text, name);
+    assert.equal(node.childForFieldName('arguments')?.text ?? null, args, header);
+    assert.equal(node.childForFieldName('setup')?.text ?? null, setup, header);
+    assert.equal(node.childForFieldName('body').text, 'print(1)\r\n');
+    if (setup)
+      assert.deepEqual(node.childForFieldName('setup').endPosition, {
+        row: 0,
+        column: header.length,
+      });
+  }
+});
+
+test('bounds long magic names, quoted values and bodies across incremental edits', () => {
+  const filename = 'path '.repeat(3000);
+  const gap = ' '.repeat(10000);
+  const cases = [
+    '%prun -T "' + filename + '"' + gap + 'factory()',
+    '%debug --breakpoint="' + filename + ':10" factory()',
+    '%timeit -n1 ' + 'factory() + '.repeat(2000) + '1',
+    '%' + 'custom'.repeat(2000) + ' factory()',
+    '%%timeit -n1 ' + 'setup = "' + filename + '"\nprint(setup)',
+    '%%' + 'custom'.repeat(2000) + ' option\nopaque body',
+  ];
+  for (const first of cases) {
+    const source = first + '\n# %% Next\nx=1\n';
+    const { parser, tree } = parse(source);
+    assert.deepEqual(markerNames(tree), ['Next']);
+    const offset = source.indexOf('path') + 1;
+    const changedAt = offset > 0 ? offset : source.indexOf('1');
+    const point = (index) => ({
+      row: source.slice(0, index).split('\n').length - 1,
+      column: index - source.lastIndexOf('\n', index - 1) - 1,
+    });
+    tree.edit({
+      startIndex: changedAt,
+      oldEndIndex: changedAt + 1,
+      newEndIndex: changedAt + 1,
+      startPosition: point(changedAt),
+      oldEndPosition: point(changedAt + 1),
+      newEndPosition: point(changedAt + 1),
+    });
+    const updated = source.slice(0, changedAt) + '2' + source.slice(changedAt + 1);
+    const incremental = parse(updated, parser, tree).tree;
+    const fresh = parse(updated).tree;
+    assert.equal(incremental.rootNode.toString(), fresh.rootNode.toString());
+    for (const type of [
+      'line_magic_name',
+      'line_magic_arguments',
+      'python_magic_body',
+      'cell_magic_name',
+      'cell_magic_arguments',
+    ])
+      assert.deepEqual(
+        nodes(incremental, type).map((node) => [node.text, node.startIndex, node.endIndex]),
+        nodes(fresh, type).map((node) => [node.text, node.startIndex, node.endIndex]),
+      );
+  }
+});
 test('bounded suffix help includes giant names without retrospective lookahead', () => {
   const name = 'identifier'.repeat(2000);
   const { tree } = parse(name + '??\n# %% Next\nx=1\n');
@@ -272,6 +436,25 @@ test('compiles the scaffold queries without Python node types', () => {
     const source = fs.readFileSync(path.join(__dirname, '..', '..', 'queries', name), 'utf8');
     assert.doesNotThrow(() => new Parser.Query(IPython, source));
   }
+});
+
+test('highlights magic names and raw arguments without capturing Python payloads', () => {
+  const query = new Parser.Query(
+    IPython,
+    fs.readFileSync(path.join(__dirname, '..', '..', 'queries', 'highlights.scm'), 'utf8'),
+  );
+  const source = '%timeit -n1 factory(2)\n%matplotlib inline\n';
+  const captures = query
+    .captures(parse(source).tree.rootNode)
+    .map(({ name, node }) => [name, node.text]);
+  assert.deepEqual(captures, [
+    ['operator', '%'],
+    ['function.builtin', 'timeit'],
+    ['string', '-n1 '],
+    ['operator', '%'],
+    ['function.builtin', 'matplotlib'],
+    ['string', 'inline'],
+  ]);
 });
 
 test('incremental code edits reuse suffix cells and agree with a fresh scaffold', () => {

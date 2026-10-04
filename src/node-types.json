@@ -41,6 +41,16 @@
             "named": true
           }
         ]
+      },
+      "setup": {
+        "multiple": false,
+        "required": false,
+        "types": [
+          {
+            "type": "python_magic_body",
+            "named": true
+          }
+        ]
       }
     }
   },
@@ -136,14 +146,86 @@
     "fields": {}
   },
   {
-    "type": "magic_expression",
+    "type": "line_magic_arguments",
     "named": true,
     "fields": {}
   },
   {
-    "type": "magic_statement",
+    "type": "line_magic_name",
     "named": true,
     "fields": {}
+  },
+  {
+    "type": "magic_expression",
+    "named": true,
+    "fields": {
+      "arguments": {
+        "multiple": false,
+        "required": false,
+        "types": [
+          {
+            "type": "line_magic_arguments",
+            "named": true
+          }
+        ]
+      },
+      "body": {
+        "multiple": false,
+        "required": false,
+        "types": [
+          {
+            "type": "python_magic_body",
+            "named": true
+          }
+        ]
+      },
+      "name": {
+        "multiple": false,
+        "required": false,
+        "types": [
+          {
+            "type": "line_magic_name",
+            "named": true
+          }
+        ]
+      }
+    }
+  },
+  {
+    "type": "magic_statement",
+    "named": true,
+    "fields": {
+      "arguments": {
+        "multiple": false,
+        "required": false,
+        "types": [
+          {
+            "type": "line_magic_arguments",
+            "named": true
+          }
+        ]
+      },
+      "body": {
+        "multiple": false,
+        "required": false,
+        "types": [
+          {
+            "type": "python_magic_body",
+            "named": true
+          }
+        ]
+      },
+      "name": {
+        "multiple": false,
+        "required": false,
+        "types": [
+          {
+            "type": "line_magic_name",
+            "named": true
+          }
+        ]
+      }
+    }
   },
   {
     "type": "markdown_cell",
@@ -227,6 +309,11 @@
     }
   },
   {
+    "type": "python_magic_body",
+    "named": true,
+    "fields": {}
+  },
+  {
     "type": "raw_cell",
     "named": true,
     "fields": {
@@ -261,6 +348,10 @@
     "type": "shell_statement",
     "named": true,
     "fields": {}
+  },
+  {
+    "type": "%",
+    "named": false
   },
   {
     "type": "%%",

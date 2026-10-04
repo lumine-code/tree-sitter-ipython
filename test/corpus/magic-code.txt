@@ -1,0 +1,127 @@
+==================
+Executable magic line payloads and CLI options
+==================
+
+%timeit prs.spt(9)
+%timeit -qr3 -n100 factory()
+%time --no-raise-error factory()
+%time -value
+%prun -T "profile results.txt" factory()
+%debug --breakpoint="my file.py:10" factory()
+%config Foo.bar = [1, 2]
+result = %timeit -o factory()
+
+---
+
+(module
+  (code_cell
+    (python_cell_body
+      (magic_statement
+        (line_magic_name)
+        (python_magic_body))
+      (magic_statement
+        (line_magic_name)
+        (line_magic_arguments)
+        (python_magic_body))
+      (magic_statement
+        (line_magic_name)
+        (line_magic_arguments)
+        (python_magic_body))
+      (magic_statement
+        (line_magic_name)
+        (python_magic_body))
+      (magic_statement
+        (line_magic_name)
+        (line_magic_arguments)
+        (python_magic_body))
+      (magic_statement
+        (line_magic_name)
+        (line_magic_arguments)
+        (python_magic_body))
+      (magic_statement
+        (line_magic_name)
+        (python_magic_body))
+      (magic_expression
+        (line_magic_name)
+        (line_magic_arguments)
+        (python_magic_body)))))
+
+==================
+Raw magic arguments and unknown options stay opaque
+==================
+
+%matplotlib inline
+%run -i "my script.py"
+%custom factory()
+%timeit -x factory()
+%debug --unknown factory()
+
+---
+
+(module
+  (code_cell
+    (python_cell_body
+      (magic_statement
+        (line_magic_name)
+        (line_magic_arguments))
+      (magic_statement
+        (line_magic_name)
+        (line_magic_arguments))
+      (magic_statement
+        (line_magic_name)
+        (line_magic_arguments))
+      (magic_statement
+        (line_magic_name)
+        (line_magic_arguments))
+      (magic_statement
+        (line_magic_name)
+        (line_magic_arguments)))))
+
+==================
+Cell setup statements are distinct from CLI arguments and body
+==================
+
+%%timeit -n1 setup = 1
+print(setup)
+# %%
+%%prun -q prepare()
+print(1)
+# %%
+%%debug --breakpoint="my file.py:10" prepare()
+print(1)
+# %%
+%%capture output --no-stderr
+print(1)
+
+---
+
+(module
+  (code_cell
+    (cell_magic
+      (cell_magic_name)
+      (cell_magic_arguments)
+      (python_magic_body)
+      (python_cell_body)))
+  (code_cell
+    (cell_marker
+      (cell_marker_marker))
+    (cell_magic
+      (cell_magic_name)
+      (cell_magic_arguments)
+      (python_magic_body)
+      (python_cell_body)))
+  (code_cell
+    (cell_marker
+      (cell_marker_marker))
+    (cell_magic
+      (cell_magic_name)
+      (cell_magic_arguments)
+      (python_magic_body)
+      (python_cell_body)))
+  (code_cell
+    (cell_marker
+      (cell_marker_marker))
+    (cell_magic
+      (cell_magic_name)
+      (cell_magic_arguments)
+      (python_cell_body))))

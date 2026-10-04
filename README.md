@@ -27,9 +27,11 @@ echo hello
 
 markdown_cell and raw_cell preserve marker and optional body fields. Their cell_body starts after the header newline and ends immediately before the next marker or EOF. A column-zero marker is reserved even inside an opaque body or Markdown fence; indent literal marker text.
 
-cell_magic preserves name, optional arguments and optional body. A cell magic must be the first nonblank line of its cell; a preceding comment or code prevents a cell header. The time, timeit, prun, debug, capture and code_wrap wrappers, and python, python2, python3 and pypy aliases, have python_cell_body. Foreign and unknown cell magics have opaque cell_body; the editor decides their injected language.
+cell_magic preserves name, optional arguments, optional setup and optional body. A cell magic must be the first nonblank line of its cell; a preceding comment or code prevents a cell header. The time, timeit, prun, debug, capture and code_wrap wrappers, and python, python2, python3 and pypy aliases, have python_cell_body. The timeit, prun and debug headers separate leading CLI arguments from an optional python_magic_body in setup. Foreign and unknown cell magics have opaque cell_body; the editor decides their injected language.
 
 Python bodies contain only hidden source chunks and actual magic_statement, shell_statement, help_statement, magic_expression and shell_expression nodes. Suffix help nodes include the full value? or obj.method?? expression. RHS nodes cover only the command after the assignment operator. Python operators, comments and quoted command-like text remain opaque Python source.
+
+Line magic statements and expressions preserve the percent prefix, optional name as line_magic_name, optional arguments as line_magic_arguments and optional body as python_magic_body. The time, timeit, prun, debug and config magics separate their Python payload from recognized leading options; other magics and unknown options retain opaque arguments. Option clusters, attached values, quoted values and the -- boundary are supported. Python payloads remain opaque scaffold nodes for separate host injections, allowing nested IPython syntax in executable wrappers without adding it to the shared Python module.
 
 ## Lexical boundaries
 

@@ -10,12 +10,16 @@ enum TokenType {
     HEADER_SPACE, TITLE_SPACE, TRAILING_SPACE, UNCERTAIN_SPACE,
     MARKDOWN_CELL_TYPE, RAW_CELL_TYPE, CODE_CELL_TYPE, HEADER_TITLE_CHUNK, CELL_HEADER_END,
     PYTHON_CELL_MAGIC, FOREIGN_CELL_MAGIC, MAGIC_NAME_CHUNK, ARGUMENTS_CHUNK,
+    LINE_MAGIC_NAME_CHUNK, LINE_MAGIC_SPACE, LINE_MAGIC_ARGUMENTS_CHUNK, PYTHON_MAGIC_BODY_CHUNK,
     PADDING_CHUNK, PYTHON_CHUNK, CELL_BODY_CHUNK,
     MAGIC_STATEMENT_START, SHELL_STATEMENT_START, HELP_STATEMENT_START,
     MAGIC_EXPRESSION_START, SHELL_EXPRESSION_START, COMMAND_TAIL, HELP_PREFIX_CHUNK, HELP_SUFFIX, DOCUMENT_END,
 };
 enum { QUOTE_SINGLE = 1, QUOTE_DOUBLE = 2, TRIPLE = 4, RAW = 8, FORMAT = 16, FIELD = 32, FORMAT_SPEC = 64 };
 enum { HEADER_NONE, HEADER_MARKER, HEADER_MAGIC };
+enum { MAGIC_RAW, MAGIC_TIME, MAGIC_TIMEIT, MAGIC_PRUN, MAGIC_DEBUG, MAGIC_CONFIG };
+enum { MAGIC_NONE, MAGIC_OPTIONS, MAGIC_ARGUMENTS, MAGIC_PYTHON };
+enum { OPTION_NONE, OPTION_DASH, OPTION_SHORT, OPTION_LONG, OPTION_ATTACHED, OPTION_VALUE };
 #define CHUNK_LIMIT 4096
 
 typedef struct { uint8_t flags; uint32_t depth; } Frame;
@@ -27,6 +31,9 @@ typedef struct {
     char recent[2];
     bool line_start, cell_start, statement_start, rhs_ready, comment_line, continued_line;
     bool marker_prefix, command_tail, help_prefix, suite_colon, arguments_active, conservative;
+    uint8_t magic_kind, magic_phase, option_mode, option_quote, option_length;
+    char option_text[32];
+    bool magic_name_active, option_pending, option_escape;
 } Scanner;
 
 static bool horizontal(int32_t c) { return c == ' ' || c == '\t'; }
@@ -217,28 +224,169 @@ static bool python_magic_name(const char *name) {
         !strcmp(name, "debug") || !strcmp(name, "capture") || !strcmp(name, "code_wrap") ||
         !strcmp(name, "python") || !strcmp(name, "python2") || !strcmp(name, "python3") || !strcmp(name, "pypy");
 }
+static uint8_t magic_kind(const char *name, bool cell) {
+    if (!strcmp(name, "timeit")) return MAGIC_TIMEIT;
+    if (!strcmp(name, "prun")) return MAGIC_PRUN;
+    if (!strcmp(name, "debug")) return MAGIC_DEBUG;
+    if (!cell && !strcmp(name, "time")) return MAGIC_TIME;
+    if (!cell && !strcmp(name, "config")) return MAGIC_CONFIG;
+    return MAGIC_RAW;
+}
+static void begin_magic(Scanner *s, const char *name, bool cell) {
+    s->magic_kind = magic_kind(name, cell);
+    s->magic_phase = s->magic_kind == MAGIC_RAW ? MAGIC_ARGUMENTS : MAGIC_OPTIONS;
+    s->magic_name_active = true; s->arguments_active = false;
+    s->option_mode = OPTION_NONE; s->option_pending = s->option_escape = false;
+    s->option_quote = s->option_length = 0; memset(s->option_text, 0, sizeof(s->option_text));
+    s->cell_start = false; s->statement_start = false; s->rhs_ready = false;
+    s->command_tail = false; s->help_prefix = false; s->recent_length = 0;
+}
+static void probe_magic_name(TSLexer *lexer, char *name, size_t size) {
+    uint32_t length = 0;
+    while (length < size - 1 && magic_name(lexer->lookahead)) {
+        name[length++] = (char)lexer->lookahead; lexer->advance(lexer, false);
+    }
+    // A longer/custom name cannot inherit the meaning of a built-in prefix.
+    if (magic_name(lexer->lookahead)) { name[0] = '\1'; name[1] = 0; }
+}
+static bool line_magic_start(Scanner *s, TSLexer *lexer, enum TokenType type) {
+    uint32_t count = 0; take(s, lexer, &count); lexer->mark_end(lexer);
+    char name[32] = {0}; probe_magic_name(lexer, name, sizeof(name));
+    begin_magic(s, name, false); lexer->result_symbol = type; return true;
+}
 static bool cell_magic(Scanner *s, TSLexer *lexer, const bool *valid) {
     if (!s->cell_start || !boundary(s) || lexer->lookahead != '%') return false;
     uint32_t count = 0; take(s, lexer, &count);
     if (lexer->lookahead != '%') {
-        s->command_tail = true; s->cell_start = false; s->statement_start = false; s->rhs_ready = false;
-        return line_chunk(s, lexer, MAGIC_STATEMENT_START, count, false);
+        if (!valid[MAGIC_STATEMENT_START]) return false;
+        lexer->mark_end(lexer);
+        char name[32] = {0}; probe_magic_name(lexer, name, sizeof(name));
+        begin_magic(s, name, false); lexer->result_symbol = MAGIC_STATEMENT_START; return true;
     }
     take(s, lexer, &count); lexer->mark_end(lexer);
-    char name[32] = {0}; uint32_t length = 0;
-    while (length < sizeof(name)-1 && magic_name(lexer->lookahead)) {
-        name[length++] = (char)lexer->lookahead; lexer->advance(lexer, false);
-    }
-    bool delimited = !magic_name(lexer->lookahead);
-    enum TokenType type = delimited && python_magic_name(name) ? PYTHON_CELL_MAGIC : FOREIGN_CELL_MAGIC;
-    if (!length || !valid[type]) {
+    char name[32] = {0}; probe_magic_name(lexer, name, sizeof(name));
+    enum TokenType type = python_magic_name(name) ? PYTHON_CELL_MAGIC : FOREIGN_CELL_MAGIC;
+    if (!name[0] || !valid[type]) {
         // The marker prefix was consumed, but is an ordinary line magic here.
-        s->command_tail = true; s->cell_start = false; s->statement_start = false;
-        return line_chunk(s, lexer, MAGIC_STATEMENT_START, count + length, false);
+        if (!valid[MAGIC_STATEMENT_START]) return false;
+        begin_magic(s, "", false); lexer->result_symbol = MAGIC_STATEMENT_START; return true;
     }
-    s->header_kind = HEADER_MAGIC; s->arguments_active = false;
-    s->cell_start = false; s->statement_start = false; s->recent_length = 0;
+    begin_magic(s, name, true); s->header_kind = HEADER_MAGIC;
     lexer->result_symbol = type; return true;
+}
+static bool short_option(Scanner *s, int32_t c, bool *value) {
+    const char *flags = s->magic_kind == MAGIC_TIMEIT ? "tcqo" : s->magic_kind == MAGIC_PRUN ? "rq" : "";
+    const char *values = s->magic_kind == MAGIC_TIMEIT ? "nrpv" : s->magic_kind == MAGIC_PRUN ? "DlsT" :
+        s->magic_kind == MAGIC_DEBUG ? "b" : "";
+    if (c <= 0 || c >= 128) return false;
+    *value = strchr(values, (char)c) != NULL;
+    return *value || strchr(flags, (char)c) != NULL;
+}
+static bool long_option(Scanner *s, bool attached) {
+    if (s->magic_kind == MAGIC_TIME && !strcmp(s->option_text, "no-raise-error") && !attached) {
+        s->option_pending = false; return true;
+    }
+    if (s->magic_kind == MAGIC_DEBUG && s->option_length &&
+        !strncmp("breakpoint", s->option_text, s->option_length)) {
+        s->option_pending = true; return true;
+    }
+    return false;
+}
+static void finish_option(Scanner *s) {
+    if (s->option_mode == OPTION_LONG) {
+        if (!s->option_length) { s->magic_phase = MAGIC_PYTHON; s->option_pending = false; }
+        else if (!long_option(s, false)) s->magic_phase = MAGIC_ARGUMENTS;
+    } else if (s->option_mode == OPTION_DASH) {
+        // A lone dash is ambiguous; keep the tail opaque instead of treating
+        // an unfinished option as executable Python.
+        s->magic_phase = MAGIC_ARGUMENTS;
+    }
+    if (s->option_quote || s->option_escape) s->magic_phase = MAGIC_ARGUMENTS;
+    s->option_mode = OPTION_NONE; s->option_quote = s->option_length = 0;
+    s->option_escape = false; memset(s->option_text, 0, sizeof(s->option_text));
+}
+static void option_character(Scanner *s, int32_t c) {
+    switch (s->option_mode) {
+        case OPTION_DASH:
+            if (c == '-') { s->option_mode = OPTION_LONG; return; }
+            s->option_mode = OPTION_SHORT;
+            // Fall through: the character following '-' is its first flag.
+        case OPTION_SHORT: {
+            bool value = false;
+            if (!short_option(s, c, &value)) { s->magic_phase = MAGIC_ARGUMENTS; return; }
+            if (value) { s->option_mode = OPTION_ATTACHED; s->option_pending = true; }
+            return;
+        }
+        case OPTION_LONG:
+            if (c == '=') {
+                if (!long_option(s, true)) { s->magic_phase = MAGIC_ARGUMENTS; return; }
+                s->option_mode = OPTION_ATTACHED; return;
+            }
+            if (c >= 128 || s->option_length >= sizeof(s->option_text)-1) { s->magic_phase = MAGIC_ARGUMENTS; return; }
+            s->option_text[s->option_length++] = (char)c; return;
+        case OPTION_ATTACHED:
+        case OPTION_VALUE:
+            s->option_pending = false;
+            if (s->option_escape) { s->option_escape = false; return; }
+            if (c == '\\' && s->option_quote != '\'') { s->option_escape = true; return; }
+            if (s->option_quote) { if (c == s->option_quote) s->option_quote = 0; return; }
+            if (c == '\'' || c == '"') s->option_quote = (uint8_t)c;
+            return;
+        default: return;
+    }
+}
+static bool magic_arguments(Scanner *s, TSLexer *lexer, enum TokenType type, bool python_valid) {
+    if (s->magic_phase != MAGIC_OPTIONS && s->magic_phase != MAGIC_ARGUMENTS) return false;
+    if (!s->arguments_active && horizontal(lexer->lookahead)) return false;
+    uint32_t count = 0;
+    if (s->magic_kind == MAGIC_TIME && s->magic_phase == MAGIC_OPTIONS && lexer->lookahead == '-') {
+        // %time recognizes just this prefix. A leading unary minus belongs
+        // to its Python statement, unlike getopt-based magic arguments.
+        const char *option = "--no-raise-error";
+        while (option[count] && lexer->lookahead == option[count]) take(s, lexer, &count);
+        bool matched = !option[count] && (horizontal(lexer->lookahead) || newline(lexer->lookahead) || lexer->eof(lexer));
+        s->magic_phase = MAGIC_PYTHON;
+        if (!matched) return python_valid && line_chunk(s, lexer, PYTHON_MAGIC_BODY_CHUNK, count, false);
+        s->magic_phase = MAGIC_OPTIONS;
+        s->arguments_active = true;
+        while (horizontal(lexer->lookahead) && count < CHUNK_LIMIT) take(s, lexer, &count);
+        return finish(lexer, type, count);
+    }
+    while (!lexer->eof(lexer) && !newline(lexer->lookahead) && count < CHUNK_LIMIT) {
+        if (s->magic_phase == MAGIC_ARGUMENTS) { take(s, lexer, &count); continue; }
+        if (s->magic_phase == MAGIC_PYTHON) {
+            if (horizontal(lexer->lookahead)) { take(s, lexer, &count); continue; }
+            break;
+        }
+        if (s->option_mode == OPTION_NONE) {
+            if (horizontal(lexer->lookahead)) { take(s, lexer, &count); continue; }
+            if (s->option_pending) s->option_mode = OPTION_VALUE;
+            else if (lexer->lookahead == '-' && s->magic_kind != MAGIC_CONFIG) {
+                if (s->magic_kind == MAGIC_DEBUG) {
+                    Scanner saved = *s; uint32_t before = count; lexer->mark_end(lexer);
+                    take(s, lexer, &count);
+                    if (lexer->lookahead != 'b' && lexer->lookahead != '-') {
+                        // Partial argparse parsing leaves unrecognized short
+                        // options as code; they can be unary Python operators.
+                        s->magic_phase = MAGIC_PYTHON;
+                        if (!before) return python_valid && line_chunk(s, lexer, PYTHON_MAGIC_BODY_CHUNK, count, false);
+                        *s = saved; s->magic_phase = MAGIC_PYTHON; s->arguments_active = true;
+                        lexer->result_symbol = type; return true;
+                    }
+                    s->option_mode = OPTION_DASH; continue;
+                }
+                s->option_mode = OPTION_DASH; take(s, lexer, &count); continue;
+            } else { s->magic_phase = MAGIC_PYTHON; break; }
+        }
+        if (horizontal(lexer->lookahead) && !s->option_quote && !s->option_escape) {
+            finish_option(s);
+            continue;
+        }
+        option_character(s, lexer->lookahead); take(s, lexer, &count);
+    }
+    if (lexer->eof(lexer) || newline(lexer->lookahead)) finish_option(s);
+    if (!count) return false;
+    s->arguments_active = true; return finish(lexer, type, count);
 }
 static bool special_here(Scanner *s, int32_t c) {
     if (!outside(s) || s->bracket_depth || s->comment_line || s->continued_line) return false;
@@ -326,9 +474,30 @@ static bool identifier_prefix(Scanner *s, TSLexer *lexer) {
 bool tree_sitter_ipython_external_scanner_scan(void *payload, TSLexer *lexer, const bool *valid) {
     Scanner *s = payload;
     if (valid[DOCUMENT_END] && lexer->eof(lexer)) { lexer->result_symbol = DOCUMENT_END; return true; }
+    if (s->magic_name_active && !magic_name(lexer->lookahead)) s->magic_name_active = false;
+    if (s->magic_name_active && (valid[MAGIC_NAME_CHUNK] || valid[LINE_MAGIC_NAME_CHUNK]) && magic_name(lexer->lookahead)) {
+        uint32_t count = 0;
+        while (magic_name(lexer->lookahead) && count < CHUNK_LIMIT) take(s, lexer, &count);
+        if (!magic_name(lexer->lookahead)) s->magic_name_active = false;
+        return finish(lexer, valid[LINE_MAGIC_NAME_CHUNK] ? LINE_MAGIC_NAME_CHUNK : MAGIC_NAME_CHUNK, count);
+    }
+    if (!s->magic_name_active && (valid[ARGUMENTS_CHUNK] || valid[LINE_MAGIC_ARGUMENTS_CHUNK]) &&
+        !newline(lexer->lookahead) && !lexer->eof(lexer) &&
+        magic_arguments(s, lexer, valid[LINE_MAGIC_ARGUMENTS_CHUNK] ? LINE_MAGIC_ARGUMENTS_CHUNK : ARGUMENTS_CHUNK,
+            valid[PYTHON_MAGIC_BODY_CHUNK])) return true;
+    if (!s->magic_name_active && valid[PYTHON_MAGIC_BODY_CHUNK] && s->magic_phase == MAGIC_PYTHON &&
+        !newline(lexer->lookahead) && !lexer->eof(lexer)) {
+        return line_chunk(s, lexer, PYTHON_MAGIC_BODY_CHUNK, 0, false);
+    }
+    if (valid[LINE_MAGIC_SPACE] && s->magic_phase != MAGIC_NONE && !s->arguments_active && horizontal(lexer->lookahead))
+        return line_chunk(s, lexer, LINE_MAGIC_SPACE, 0, true);
     if (valid[COMMAND_TAIL] && s->command_tail && !newline(lexer->lookahead) && !lexer->eof(lexer))
         return line_chunk(s, lexer, COMMAND_TAIL, 0, false);
-    if (newline(lexer->lookahead) || lexer->eof(lexer)) s->command_tail = false;
+    if (newline(lexer->lookahead) || lexer->eof(lexer)) {
+        s->command_tail = false; s->magic_phase = MAGIC_NONE; s->magic_kind = MAGIC_RAW;
+        s->magic_name_active = s->arguments_active = s->option_pending = s->option_escape = false;
+        s->option_mode = s->option_quote = s->option_length = 0; memset(s->option_text, 0, sizeof(s->option_text));
+    }
     if (valid[PREFIX_SPACE] && s->marker_prefix && horizontal(lexer->lookahead))
         return line_chunk(s, lexer, PREFIX_SPACE, 0, true);
     if (s->marker_prefix && lexer->lookahead == '%') {
@@ -349,21 +518,12 @@ bool tree_sitter_ipython_external_scanner_scan(void *payload, TSLexer *lexer, co
         while (lexer->lookahead == '%' && count < CHUNK_LIMIT) take(s, lexer, &count);
         return finish(lexer, PREFIX_PERCENT_MORE, count);
     }
-    if (valid[ARGUMENTS_CHUNK] && (s->arguments_active || !horizontal(lexer->lookahead)) &&
-        !newline(lexer->lookahead) && !lexer->eof(lexer)) {
-        s->arguments_active = true; return line_chunk(s, lexer, ARGUMENTS_CHUNK, 0, false);
-    }
     if ((valid[HEADER_SPACE] || valid[TITLE_SPACE] || valid[TRAILING_SPACE] || valid[UNCERTAIN_SPACE]) && horizontal(lexer->lookahead))
         return header_space(s, lexer, valid);
     if ((valid[MARKDOWN_CELL_TYPE] || valid[RAW_CELL_TYPE] || valid[CODE_CELL_TYPE]) && lexer->lookahead == '[')
         return header_type(s, lexer, valid);
     if (valid[HEADER_TITLE_CHUNK] && !horizontal(lexer->lookahead) && !newline(lexer->lookahead) && !lexer->eof(lexer))
         return title_chunk(s, lexer, 0);
-    if (valid[MAGIC_NAME_CHUNK] && magic_name(lexer->lookahead)) {
-        uint32_t count = 0;
-        while (magic_name(lexer->lookahead) && count < CHUNK_LIMIT) take(s, lexer, &count);
-        return finish(lexer, MAGIC_NAME_CHUNK, count);
-    }
     if (valid[CELL_HEADER_END] && (newline(lexer->lookahead) || lexer->eof(lexer))) {
         uint32_t count = 0;
         if (lexer->lookahead == '\r') take(s, lexer, &count);
@@ -426,6 +586,7 @@ bool tree_sitter_ipython_external_scanner_scan(void *payload, TSLexer *lexer, co
             enum TokenType type = lexer->lookahead == '%' ? (s->rhs_ready ? MAGIC_EXPRESSION_START : MAGIC_STATEMENT_START) :
                 lexer->lookahead == '!' ? (s->rhs_ready ? SHELL_EXPRESSION_START : SHELL_STATEMENT_START) : HELP_STATEMENT_START;
             if (!valid[type]) return false;
+            if (lexer->lookahead == '%') return line_magic_start(s, lexer, type);
             s->cell_start = false; s->statement_start = false; s->rhs_ready = false; s->command_tail = true; s->help_prefix = false;
             return line_chunk(s, lexer, type, 0, false);
         }
@@ -451,11 +612,15 @@ unsigned tree_sitter_ipython_external_scanner_serialize(void *payload, char *buf
     Scanner *s = payload;
     uint16_t flags = s->line_start | (s->cell_start << 1) | (s->statement_start << 2) | (s->rhs_ready << 3) |
         (s->comment_line << 4) | (s->continued_line << 5) | (s->marker_prefix << 6) | (s->command_tail << 7) |
-        (s->help_prefix << 8) | (s->suite_colon << 9) | (s->arguments_active << 10) | (s->conservative << 11);
+        (s->help_prefix << 8) | (s->suite_colon << 9) | (s->arguments_active << 10) | (s->conservative << 11) |
+        (s->magic_name_active << 12) | (s->option_pending << 13) | (s->option_escape << 14);
     unsigned offset = 0; memcpy(buffer, &flags, 2); offset += 2;
     buffer[offset++] = s->header_kind; buffer[offset++] = s->recent_length;
     buffer[offset++] = s->recent_length == 1 || s->recent_length == 2 ? s->recent[0] : 0;
     buffer[offset++] = s->recent_length == 2 ? s->recent[1] : 0;
+    buffer[offset++] = s->magic_kind; buffer[offset++] = s->magic_phase; buffer[offset++] = s->option_mode;
+    buffer[offset++] = s->option_quote; buffer[offset++] = s->option_length;
+    memcpy(buffer + offset, s->option_text, sizeof(s->option_text)); offset += sizeof(s->option_text);
     offset = write_u32(buffer, offset, s->bracket_depth); offset = write_u32(buffer, offset, (uint32_t)s->previous);
     unsigned count_offset = offset; offset += 2; uint16_t count = 0;
     for (uint32_t i = 0; i < s->frames.size; i++) {
@@ -475,14 +640,20 @@ void tree_sitter_ipython_external_scanner_deserialize(void *payload, const char 
     s->line_start = s->cell_start = s->statement_start = true;
     s->rhs_ready = s->comment_line = s->continued_line = s->marker_prefix = s->command_tail = false;
     s->help_prefix = s->suite_colon = s->arguments_active = s->conservative = false;
+    s->magic_kind = MAGIC_RAW; s->magic_phase = MAGIC_NONE; s->magic_name_active = s->option_pending = s->option_escape = false;
+    s->option_mode = s->option_quote = s->option_length = 0; memset(s->option_text, 0, sizeof(s->option_text));
     if (!length) return;
-    if (length < 16) return;
+    if (length < 53) return;
     unsigned offset = 0; uint16_t flags; memcpy(&flags, buffer, 2); offset += 2;
     s->line_start = flags & 1; s->cell_start = flags & 2; s->statement_start = flags & 4; s->rhs_ready = flags & 8;
     s->comment_line = flags & 16; s->continued_line = flags & 32; s->marker_prefix = flags & 64; s->command_tail = flags & 128;
     s->help_prefix = flags & 256; s->suite_colon = flags & 512; s->arguments_active = flags & 1024; s->conservative = flags & 2048;
+    s->magic_name_active = flags & 4096; s->option_pending = flags & 8192; s->option_escape = flags & 16384;
     s->header_kind = buffer[offset++]; s->recent_length = buffer[offset++];
     s->recent[0] = buffer[offset++]; s->recent[1] = buffer[offset++];
+    s->magic_kind = buffer[offset++]; s->magic_phase = buffer[offset++]; s->option_mode = buffer[offset++];
+    s->option_quote = buffer[offset++]; s->option_length = buffer[offset++];
+    memcpy(s->option_text, buffer + offset, sizeof(s->option_text)); offset += sizeof(s->option_text);
     s->bracket_depth = read_u32(buffer, &offset); s->previous = (int32_t)read_u32(buffer, &offset);
     uint16_t count; memcpy(&count, buffer + offset, 2); offset += 2;
     for (uint16_t i = 0; i < count && offset < length; i++) {
