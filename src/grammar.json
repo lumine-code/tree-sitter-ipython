@@ -694,6 +694,59 @@
               "name": "_help_suffix"
             }
           ]
+        },
+        {
+          "type": "SEQ",
+          "members": [
+            {
+              "type": "ALIAS",
+              "content": {
+                "type": "SYMBOL",
+                "name": "_magic_statement_start"
+              },
+              "named": false,
+              "value": "%"
+            },
+            {
+              "type": "SYMBOL",
+              "name": "line_magic_name"
+            },
+            {
+              "type": "SYMBOL",
+              "name": "_help_suffix"
+            }
+          ]
+        },
+        {
+          "type": "SEQ",
+          "members": [
+            {
+              "type": "ALIAS",
+              "content": {
+                "type": "CHOICE",
+                "members": [
+                  {
+                    "type": "SYMBOL",
+                    "name": "_python_cell_magic"
+                  },
+                  {
+                    "type": "SYMBOL",
+                    "name": "_foreign_cell_magic"
+                  }
+                ]
+              },
+              "named": false,
+              "value": "%%"
+            },
+            {
+              "type": "SYMBOL",
+              "name": "cell_magic_name"
+            },
+            {
+              "type": "SYMBOL",
+              "name": "_help_suffix"
+            }
+          ]
         }
       ]
     },

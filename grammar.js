@@ -86,6 +86,8 @@ module.exports = grammar({
     help_statement: $ => choice(
       seq($._help_statement_start, repeat($._command_tail)),
       seq(repeat1($._help_prefix_chunk), $._help_suffix),
+      seq(alias($._magic_statement_start, '%'), $.line_magic_name, $._help_suffix),
+      seq(alias(choice($._python_cell_magic, $._foreign_cell_magic), '%%'), $.cell_magic_name, $._help_suffix),
     ),
     magic_expression: $ => seq(alias($._magic_expression_start, '%'),
       optional(field('name', $.line_magic_name)), repeat($._line_magic_space),

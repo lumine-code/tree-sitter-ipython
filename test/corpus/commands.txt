@@ -1,0 +1,50 @@
+==================
+Help suffix precedes magic calls and supports target searches
+==================
+
+%%timeit?
+np.*?
+items[-1].value??
+# %% Next
+value=1
+
+---
+
+(module
+  (code_cell
+    (python_cell_body
+      (help_statement (cell_magic_name))
+      (help_statement)
+      (help_statement)))
+  (code_cell
+    (cell_marker
+      (cell_marker_marker)
+      (cell_marker_name))
+    (python_cell_body)))
+
+==================
+Logical command spans include physical continuations
+==================
+
+%timeit -n \
+  2 work()
+value = !echo one \
+  two
+# %% Next
+after=1
+
+---
+
+(module
+  (code_cell
+    (python_cell_body
+      (magic_statement
+        (line_magic_name)
+        (line_magic_arguments)
+        (python_magic_body))
+      (shell_expression)))
+  (code_cell
+    (cell_marker
+      (cell_marker_marker)
+      (cell_marker_name))
+    (python_cell_body)))

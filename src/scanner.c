@@ -20,7 +20,9 @@ enum { HEADER_NONE, HEADER_MARKER, HEADER_MAGIC };
 enum { MAGIC_RAW, MAGIC_TIME, MAGIC_TIMEIT, MAGIC_PRUN, MAGIC_DEBUG, MAGIC_CONFIG };
 enum { MAGIC_NONE, MAGIC_OPTIONS, MAGIC_ARGUMENTS, MAGIC_PYTHON };
 enum { OPTION_NONE, OPTION_DASH, OPTION_SHORT, OPTION_LONG, OPTION_ATTACHED, OPTION_VALUE };
+enum { HELP_WORD, HELP_DOT, HELP_INDEX, HELP_SIGN, HELP_DIGITS, HELP_AFTER_INDEX };
 #define CHUNK_LIMIT 4096
+#define SERIALIZED_HEADER_SIZE 56
 
 typedef struct { uint8_t flags; uint32_t depth; } Frame;
 typedef struct {
@@ -34,13 +36,16 @@ typedef struct {
     uint8_t magic_kind, magic_phase, option_mode, option_quote, option_length;
     char option_text[32];
     bool magic_name_active, option_pending, option_escape;
+    bool command_backslash, command_cr;
+    uint8_t help_state;
 } Scanner;
 
 static bool horizontal(int32_t c) { return c == ' ' || c == '\t'; }
 static bool newline(int32_t c) { return c == '\r' || c == '\n'; }
 static bool alpha(int32_t c) { return (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || c == '_'; }
 static bool identifier_start(int32_t c) { return alpha(c) || c >= 128; }
-static bool identifier_part(int32_t c) { return identifier_start(c) || (c >= '0' && c <= '9') || c == '.'; }
+static bool digit(int32_t c) { return c >= '0' && c <= '9'; }
+static bool help_start(int32_t c) { return identifier_start(c) || c == '*'; }
 static bool magic_name(int32_t c) { return alpha(c) || (c >= '0' && c <= '9') || c == '!'; }
 static bool outside(Scanner *s) { return !s->frames.size && !s->conservative; }
 static bool boundary(Scanner *s) { return s->line_start && outside(s) && !s->bracket_depth && !s->continued_line; }
@@ -189,6 +194,59 @@ static bool line_chunk(Scanner *s, TSLexer *lexer, enum TokenType type, uint32_t
         (spaces ? horizontal(lexer->lookahead) : !newline(lexer->lookahead))) take(s, lexer, &count);
     return finish(lexer, type, count);
 }
+// Command spans follow logical lines. Retain the last physical character even
+// at a chunk boundary, including a CRLF split between two external tokens.
+static bool logical_end(Scanner *s, TSLexer *lexer) {
+    return newline(lexer->lookahead) &&
+        (s->header_kind == HEADER_MAGIC || (!s->command_backslash && !(s->command_cr && lexer->lookahead == '\n')));
+}
+static void command_character(Scanner *s, TSLexer *lexer, uint32_t *count) {
+    int32_t c = lexer->lookahead;
+    s->command_cr = c == '\r' && s->command_backslash;
+    s->command_backslash = c == '\\';
+    take(s, lexer, count);
+}
+static bool command_chunk(Scanner *s, TSLexer *lexer, enum TokenType type, uint32_t count) {
+    while (!lexer->eof(lexer) && count < CHUNK_LIMIT && !logical_end(s, lexer)) command_character(s, lexer, &count);
+    return finish(lexer, type, count);
+}
+// Probe a help target without an unbounded lookahead or a second Python parser.
+// On a non-help path the consumed brackets/recent characters are ordinary
+// Python lexical state, so malformed and unfinished subscripts recover there.
+static bool help_character(Scanner *s, TSLexer *lexer, uint32_t *count) {
+    int32_t c = lexer->lookahead;
+    switch (s->help_state) {
+        case HELP_WORD:
+            if (identifier_start(c) || digit(c) || c == '*') break;
+            if (c == '.') { s->help_state = HELP_DOT; break; }
+            if (c == '[') { s->help_state = HELP_INDEX; ++s->bracket_depth; break; }
+            return false;
+        case HELP_DOT:
+            if (!help_start(c)) return false;
+            s->help_state = HELP_WORD; break;
+        case HELP_INDEX:
+            if (c == '-') s->help_state = HELP_SIGN;
+            else if (digit(c)) s->help_state = HELP_DIGITS;
+            else return false;
+            break;
+        case HELP_SIGN:
+            if (!digit(c)) return false;
+            s->help_state = HELP_DIGITS; break;
+        case HELP_DIGITS:
+            if (digit(c)) break;
+            if (c != ']') return false;
+            s->help_state = HELP_AFTER_INDEX;
+            if (s->bracket_depth) --s->bracket_depth;
+            break;
+        case HELP_AFTER_INDEX:
+            if (c == '.') { s->help_state = HELP_DOT; break; }
+            if (c == '[') { s->help_state = HELP_INDEX; ++s->bracket_depth; break; }
+            return false;
+        default: return false;
+    }
+    recent(s, c); s->previous = c; take(s, lexer, count); return true;
+}
+static bool help_complete(Scanner *s) { return s->help_state == HELP_WORD || s->help_state == HELP_AFTER_INDEX; }
 static bool header_space(Scanner *s, TSLexer *lexer, const bool *valid) {
     uint32_t count = 0;
     while (horizontal(lexer->lookahead) && count < CHUNK_LIMIT) take(s, lexer, &count);
@@ -196,7 +254,7 @@ static bool header_space(Scanner *s, TSLexer *lexer, const bool *valid) {
     if (horizontal(lexer->lookahead) && valid[UNCERTAIN_SPACE]) type = UNCERTAIN_SPACE;
     else if ((lexer->eof(lexer) || newline(lexer->lookahead)) && valid[TRAILING_SPACE]) type = TRAILING_SPACE;
     else if (valid[TITLE_SPACE]) type = TITLE_SPACE;
-    else type = HEADER_SPACE;
+    else type = valid[HEADER_SPACE] ? HEADER_SPACE : UNCERTAIN_SPACE;
     return finish(lexer, type, count);
 }
 static bool title_chunk(Scanner *s, TSLexer *lexer, uint32_t count) {
@@ -206,7 +264,7 @@ static bool title_chunk(Scanner *s, TSLexer *lexer, uint32_t count) {
 }
 static bool header_type(Scanner *s, TSLexer *lexer, const bool *valid) {
     char text[16] = {0}; uint32_t count = 0;
-    while (count < sizeof(text)-1 && lexer->lookahead < 128 && !lexer->eof(lexer) &&
+    while (count < sizeof(text)-1 && lexer->lookahead > 0 && lexer->lookahead < 128 && !lexer->eof(lexer) &&
         !horizontal(lexer->lookahead) && !newline(lexer->lookahead)) {
         text[count] = (char)lexer->lookahead; take(s, lexer, &count);
     }
@@ -240,6 +298,7 @@ static void begin_magic(Scanner *s, const char *name, bool cell) {
     s->option_quote = s->option_length = 0; memset(s->option_text, 0, sizeof(s->option_text));
     s->cell_start = false; s->statement_start = false; s->rhs_ready = false;
     s->command_tail = false; s->help_prefix = false; s->recent_length = 0;
+    s->command_backslash = s->command_cr = false;
 }
 static void probe_magic_name(TSLexer *lexer, char *name, size_t size) {
     uint32_t length = 0;
@@ -326,7 +385,7 @@ static void option_character(Scanner *s, int32_t c) {
                 if (!long_option(s, true)) { s->magic_phase = MAGIC_ARGUMENTS; return; }
                 s->option_mode = OPTION_ATTACHED; return;
             }
-            if (c >= 128 || s->option_length >= sizeof(s->option_text)-1) { s->magic_phase = MAGIC_ARGUMENTS; return; }
+            if (c <= 0 || c >= 128 || s->option_length >= sizeof(s->option_text)-1) { s->magic_phase = MAGIC_ARGUMENTS; return; }
             s->option_text[s->option_length++] = (char)c; return;
         case OPTION_ATTACHED:
         case OPTION_VALUE:
@@ -350,23 +409,41 @@ static bool magic_arguments(Scanner *s, TSLexer *lexer, enum TokenType type, boo
         while (option[count] && lexer->lookahead == option[count]) take(s, lexer, &count);
         bool matched = !option[count] && (horizontal(lexer->lookahead) || newline(lexer->lookahead) || lexer->eof(lexer));
         s->magic_phase = MAGIC_PYTHON;
-        if (!matched) return python_valid && line_chunk(s, lexer, PYTHON_MAGIC_BODY_CHUNK, count, false);
+        if (!matched) return python_valid && command_chunk(s, lexer, PYTHON_MAGIC_BODY_CHUNK, count);
         s->magic_phase = MAGIC_OPTIONS;
         s->arguments_active = true;
         while (horizontal(lexer->lookahead) && count < CHUNK_LIMIT) take(s, lexer, &count);
         return finish(lexer, type, count);
     }
-    while (!lexer->eof(lexer) && !newline(lexer->lookahead) && count < CHUNK_LIMIT) {
-        if (s->magic_phase == MAGIC_ARGUMENTS) { take(s, lexer, &count); continue; }
+    while (!lexer->eof(lexer) && !logical_end(s, lexer) && count < CHUNK_LIMIT) {
+        if (newline(lexer->lookahead)) {
+            command_character(s, lexer, &count);
+            s->option_escape = false;
+            continue;
+        }
+        if (s->magic_phase == MAGIC_ARGUMENTS) { command_character(s, lexer, &count); continue; }
         if (s->magic_phase == MAGIC_PYTHON) {
-            if (horizontal(lexer->lookahead)) { take(s, lexer, &count); continue; }
+            if (horizontal(lexer->lookahead)) { command_character(s, lexer, &count); continue; }
             break;
         }
+        if (lexer->lookahead == '\\' && s->header_kind != HEADER_MAGIC) {
+            // Line joining removes this pair before option parsing. It must
+            // not satisfy a pending value or turn a separator into code.
+            Scanner saved = *s; uint32_t before = count; lexer->mark_end(lexer);
+            command_character(s, lexer, &count);
+            if (newline(lexer->lookahead)) continue;
+            if (s->option_mode != OPTION_NONE) { option_character(s, '\\'); continue; }
+            if (!before) { s->magic_phase = MAGIC_PYTHON; return python_valid && command_chunk(s, lexer, PYTHON_MAGIC_BODY_CHUNK, count); }
+            *s = saved; s->magic_phase = MAGIC_PYTHON; s->arguments_active = true;
+            lexer->result_symbol = type; return true;
+        }
         if (s->option_mode == OPTION_NONE) {
-            if (horizontal(lexer->lookahead)) { take(s, lexer, &count); continue; }
+            if (horizontal(lexer->lookahead)) { command_character(s, lexer, &count); continue; }
             if (s->option_pending) s->option_mode = OPTION_VALUE;
             else if (lexer->lookahead == '-' && s->magic_kind != MAGIC_CONFIG) {
                 if (s->magic_kind == MAGIC_DEBUG) {
+                    // This bounded probe must fit even after a giant gap.
+                    if (count && CHUNK_LIMIT - count < 13) break;
                     Scanner saved = *s; uint32_t before = count; lexer->mark_end(lexer);
                     take(s, lexer, &count);
                     bool known = lexer->lookahead == 'b';
@@ -389,28 +466,28 @@ static bool magic_arguments(Scanner *s, TSLexer *lexer, enum TokenType type, boo
                         s->magic_phase = MAGIC_PYTHON;
                         s->option_mode = OPTION_NONE; s->option_length = 0;
                         memset(s->option_text, 0, sizeof(s->option_text));
-                        if (!before) return python_valid && line_chunk(s, lexer, PYTHON_MAGIC_BODY_CHUNK, count, false);
+                        if (!before) return python_valid && command_chunk(s, lexer, PYTHON_MAGIC_BODY_CHUNK, count);
                         *s = saved; s->magic_phase = MAGIC_PYTHON; s->arguments_active = true;
                         lexer->result_symbol = type; return true;
                     }
                     continue;
                 }
-                s->option_mode = OPTION_DASH; take(s, lexer, &count); continue;
+                s->option_mode = OPTION_DASH; command_character(s, lexer, &count); continue;
             } else { s->magic_phase = MAGIC_PYTHON; break; }
         }
         if (horizontal(lexer->lookahead) && !s->option_quote && !s->option_escape) {
             finish_option(s);
             continue;
         }
-        option_character(s, lexer->lookahead); take(s, lexer, &count);
+        option_character(s, lexer->lookahead); command_character(s, lexer, &count);
     }
-    if (lexer->eof(lexer) || newline(lexer->lookahead)) finish_option(s);
+    if (lexer->eof(lexer) || logical_end(s, lexer)) finish_option(s);
     if (!count) return false;
     s->arguments_active = true; return finish(lexer, type, count);
 }
 static bool special_here(Scanner *s, int32_t c) {
     if (!outside(s) || s->bracket_depth || s->comment_line || s->continued_line) return false;
-    return (s->statement_start && (c == '%' || c == '!' || c == '?' || identifier_start(c))) ||
+    return (s->statement_start && (c == '%' || c == '!' || c == '?' || help_start(c))) ||
         (s->rhs_ready && (c == '%' || c == '!')) || (s->help_prefix && c == '?') ||
         (boundary(s) && c == '#');
 }
@@ -453,18 +530,20 @@ static bool python_chunk(Scanner *s, TSLexer *lexer, const bool *valid) {
         // A normal first word needs no scaffold token. Only a suffix-help
         // candidate, or an unfinished giant name, uses the shared prefix rule.
         if (outside(s) && !s->bracket_depth && !s->comment_line && !s->continued_line &&
-            s->statement_start && identifier_start(lexer->lookahead)) {
+            s->statement_start && help_start(lexer->lookahead)) {
             Scanner saved = *s;
             uint32_t probe = 0; char word[16] = {0};
             lexer->mark_end(lexer);
-            while (identifier_part(lexer->lookahead) && count + probe < CHUNK_LIMIT) {
-                if (probe < sizeof(word)-1 && lexer->lookahead < 128) word[probe] = (char)lexer->lookahead;
-                recent(s, lexer->lookahead); s->previous = lexer->lookahead;
-                take(s, lexer, &probe);
+            s->help_state = HELP_WORD;
+            while (!lexer->eof(lexer) && count + probe < CHUNK_LIMIT) {
+                int32_t c = lexer->lookahead; uint32_t before = probe;
+                if (!help_character(s, lexer, &probe)) break;
+                if (before < sizeof(word)-1 && c > 0 && c < 128) word[before] = (char)c;
             }
-            if (lexer->lookahead == '?' || identifier_part(lexer->lookahead)) {
+            if ((lexer->lookahead == '?' && help_complete(s)) || count + probe == CHUNK_LIMIT) {
                 if (count) { *s = saved; lexer->result_symbol = PYTHON_CHUNK; return true; }
                 s->help_prefix = true; s->cell_start = false; s->statement_start = false; s->rhs_ready = false;
+                if (!valid[HELP_PREFIX_CHUNK]) { s->help_prefix = false; return finish(lexer, PYTHON_CHUNK, probe); }
                 return finish(lexer, HELP_PREFIX_CHUNK, probe);
             }
             count += probe;
@@ -483,40 +562,91 @@ static bool python_chunk(Scanner *s, TSLexer *lexer, const bool *valid) {
 }
 static bool identifier_prefix(Scanner *s, TSLexer *lexer) {
     uint32_t count = 0; char word[16] = {0}; bool first = s->statement_start;
-    while (!lexer->eof(lexer) && count < CHUNK_LIMIT && identifier_part(lexer->lookahead)) {
-        if (count < sizeof(word)-1 && lexer->lookahead < 128) word[count] = (char)lexer->lookahead;
-        recent(s, lexer->lookahead); s->previous = lexer->lookahead; take(s, lexer, &count);
+    while (!lexer->eof(lexer) && count < CHUNK_LIMIT) {
+        int32_t c = lexer->lookahead; uint32_t before = count;
+        if (!help_character(s, lexer, &count)) break;
+        if (before < sizeof(word)-1 && c > 0 && c < 128) word[before] = (char)c;
     }
     if (first) s->suite_colon = count < sizeof(word) && suite_keyword(word);
     s->help_prefix = true; s->cell_start = false; s->statement_start = false; s->rhs_ready = false;
     return finish(lexer, HELP_PREFIX_CHUNK, count);
 }
+static bool opaque_chunk(Scanner *s, TSLexer *lexer, const bool *valid) {
+    uint32_t count = 0;
+    while (!lexer->eof(lexer) && count < CHUNK_LIMIT) {
+        if (s->line_start && lexer->lookahead == '#') {
+            Scanner saved = *s; uint32_t probe = 0;
+            lexer->mark_end(lexer);
+            take(s, lexer, &probe);
+            if (!count) lexer->mark_end(lexer);
+            while (horizontal(lexer->lookahead) && count + probe < CHUNK_LIMIT) take(s, lexer, &probe);
+            bool possible = horizontal(lexer->lookahead);
+            if (lexer->lookahead == '%') {
+                if (count + probe == CHUNK_LIMIT) possible = true;
+                else { take(s, lexer, &probe); possible = lexer->lookahead == '%'; }
+            }
+            if (possible) {
+                *s = saved;
+                if (count) { lexer->result_symbol = CELL_BODY_CHUNK; return true; }
+                enum TokenType type = probe < CHUNK_LIMIT && lexer->lookahead == '%' ? MARKER_HASH : PREFIX_HASH;
+                if (!valid[type]) return false;
+                s->line_start = false; s->marker_prefix = true;
+                s->comment_line = true; s->statement_start = s->cell_start = s->rhs_ready = false;
+                lexer->result_symbol = type; return true;
+            }
+            count += probe;
+            s->marker_prefix = false;
+            continue;
+        }
+        take(s, lexer, &count);
+    }
+    return finish(lexer, CELL_BODY_CHUNK, count);
+}
 bool tree_sitter_ipython_external_scanner_scan(void *payload, TSLexer *lexer, const bool *valid) {
     Scanner *s = payload;
     if (valid[DOCUMENT_END] && lexer->eof(lexer)) { lexer->result_symbol = DOCUMENT_END; return true; }
-    if (s->magic_name_active && !magic_name(lexer->lookahead)) s->magic_name_active = false;
+    if (s->magic_name_active && !magic_name(lexer->lookahead)) {
+        s->magic_name_active = false;
+        s->help_prefix = lexer->lookahead == '?'; s->help_state = HELP_WORD;
+    }
     if (s->magic_name_active && (valid[MAGIC_NAME_CHUNK] || valid[LINE_MAGIC_NAME_CHUNK]) && magic_name(lexer->lookahead)) {
         uint32_t count = 0;
         while (magic_name(lexer->lookahead) && count < CHUNK_LIMIT) take(s, lexer, &count);
-        if (!magic_name(lexer->lookahead)) s->magic_name_active = false;
+        if (!magic_name(lexer->lookahead)) {
+            s->magic_name_active = false;
+            s->help_prefix = lexer->lookahead == '?'; s->help_state = HELP_WORD;
+        }
         return finish(lexer, valid[LINE_MAGIC_NAME_CHUNK] ? LINE_MAGIC_NAME_CHUNK : MAGIC_NAME_CHUNK, count);
     }
+    if (s->help_prefix && valid[HELP_SUFFIX] && lexer->lookahead == '?' && help_complete(s)) {
+        uint32_t count = 0; take(s, lexer, &count);
+        if (lexer->lookahead == '?') take(s, lexer, &count);
+        s->help_prefix = false; s->magic_phase = MAGIC_NONE; s->header_kind = HEADER_NONE;
+        s->magic_name_active = s->arguments_active = s->command_backslash = s->command_cr = false;
+        return finish(lexer, HELP_SUFFIX, count);
+    }
+    if (s->help_prefix && s->magic_phase == MAGIC_NONE && valid[HELP_PREFIX_CHUNK]) {
+        Scanner saved = *s;
+        if (identifier_prefix(s, lexer)) return true;
+        *s = saved; s->help_prefix = false;
+    }
     if (!s->magic_name_active && (valid[ARGUMENTS_CHUNK] || valid[LINE_MAGIC_ARGUMENTS_CHUNK]) &&
-        !newline(lexer->lookahead) && !lexer->eof(lexer) &&
+        !logical_end(s, lexer) && !lexer->eof(lexer) &&
         magic_arguments(s, lexer, valid[LINE_MAGIC_ARGUMENTS_CHUNK] ? LINE_MAGIC_ARGUMENTS_CHUNK : ARGUMENTS_CHUNK,
             valid[PYTHON_MAGIC_BODY_CHUNK])) return true;
     if (!s->magic_name_active && valid[PYTHON_MAGIC_BODY_CHUNK] && s->magic_phase == MAGIC_PYTHON &&
-        !newline(lexer->lookahead) && !lexer->eof(lexer)) {
-        return line_chunk(s, lexer, PYTHON_MAGIC_BODY_CHUNK, 0, false);
+        !logical_end(s, lexer) && !lexer->eof(lexer)) {
+        return command_chunk(s, lexer, PYTHON_MAGIC_BODY_CHUNK, 0);
     }
     if (valid[LINE_MAGIC_SPACE] && s->magic_phase != MAGIC_NONE && !s->arguments_active && horizontal(lexer->lookahead))
         return line_chunk(s, lexer, LINE_MAGIC_SPACE, 0, true);
-    if (valid[COMMAND_TAIL] && s->command_tail && !newline(lexer->lookahead) && !lexer->eof(lexer))
-        return line_chunk(s, lexer, COMMAND_TAIL, 0, false);
-    if (newline(lexer->lookahead) || lexer->eof(lexer)) {
+    if (valid[COMMAND_TAIL] && s->command_tail && !logical_end(s, lexer) && !lexer->eof(lexer))
+        return command_chunk(s, lexer, COMMAND_TAIL, 0);
+    if (logical_end(s, lexer) || lexer->eof(lexer)) {
         s->command_tail = false; s->magic_phase = MAGIC_NONE; s->magic_kind = MAGIC_RAW;
         s->magic_name_active = s->arguments_active = s->option_pending = s->option_escape = false;
         s->option_mode = s->option_quote = s->option_length = 0; memset(s->option_text, 0, sizeof(s->option_text));
+        s->command_backslash = s->command_cr = false;
     }
     if (valid[PREFIX_SPACE] && s->marker_prefix && horizontal(lexer->lookahead))
         return line_chunk(s, lexer, PREFIX_SPACE, 0, true);
@@ -554,14 +684,7 @@ bool tree_sitter_ipython_external_scanner_scan(void *payload, TSLexer *lexer, co
         s->bracket_depth = 0; s->frames.size = 0; s->recent_length = 0; s->help_prefix = false; s->suite_colon = false;
         lexer->mark_end(lexer); lexer->result_symbol = CELL_HEADER_END; return true;
     }
-    if (valid[CELL_BODY_CHUNK]) {
-        uint32_t count = 0;
-        while (!lexer->eof(lexer) && count < CHUNK_LIMIT) {
-            if (s->line_start && lexer->lookahead == '#') break;
-            take(s, lexer, &count);
-        }
-        if (count) return finish(lexer, CELL_BODY_CHUNK, count);
-    }
+    if (valid[CELL_BODY_CHUNK]) return opaque_chunk(s, lexer, valid);
     if (valid[PYTHON_CHUNK] && boundary(s) && lexer->lookahead == '#') return python_chunk(s, lexer, valid);
     if ((valid[PREFIX_HASH] || valid[MARKER_HASH] || valid[BODY_HASH]) && lexer->lookahead == '#' &&
         ((valid[CELL_BODY_CHUNK] && s->line_start) || boundary(s))) {
@@ -595,22 +718,16 @@ bool tree_sitter_ipython_external_scanner_scan(void *payload, TSLexer *lexer, co
     if ((valid[PYTHON_CELL_MAGIC] || valid[FOREIGN_CELL_MAGIC]) && s->cell_start && boundary(s) && lexer->lookahead == '%')
         return cell_magic(s, lexer, valid);
     if (outside(s) && !s->bracket_depth && !s->comment_line && !s->continued_line) {
-        if (s->help_prefix && valid[HELP_PREFIX_CHUNK] && identifier_part(lexer->lookahead)) return identifier_prefix(s, lexer);
-        if (s->help_prefix && lexer->lookahead == '?') {
-            if (!valid[HELP_SUFFIX]) return false;
-            uint32_t count = 0; take(s, lexer, &count);
-            if (lexer->lookahead == '?') take(s, lexer, &count);
-            s->help_prefix = false; return finish(lexer, HELP_SUFFIX, count);
-        }
         if ((s->statement_start || s->rhs_ready) && (lexer->lookahead == '%' || lexer->lookahead == '!' || (s->statement_start && lexer->lookahead == '?'))) {
             enum TokenType type = lexer->lookahead == '%' ? (s->rhs_ready ? MAGIC_EXPRESSION_START : MAGIC_STATEMENT_START) :
                 lexer->lookahead == '!' ? (s->rhs_ready ? SHELL_EXPRESSION_START : SHELL_STATEMENT_START) : HELP_STATEMENT_START;
             if (!valid[type]) return false;
             if (lexer->lookahead == '%') return line_magic_start(s, lexer, type);
             s->cell_start = false; s->statement_start = false; s->rhs_ready = false; s->command_tail = true; s->help_prefix = false;
-            return line_chunk(s, lexer, type, 0, false);
+            s->command_backslash = s->command_cr = false;
+            return command_chunk(s, lexer, type, 0);
         }
-        if (s->statement_start && valid[PYTHON_CHUNK] && identifier_start(lexer->lookahead)) return python_chunk(s, lexer, valid);
+        if (s->statement_start && valid[PYTHON_CHUNK] && help_start(lexer->lookahead)) return python_chunk(s, lexer, valid);
     }
     if (valid[PYTHON_CHUNK]) return python_chunk(s, lexer, valid);
     return false;
@@ -630,11 +747,12 @@ static uint32_t read_u32(const char *buffer, unsigned *offset) {
 }
 unsigned tree_sitter_ipython_external_scanner_serialize(void *payload, char *buffer) {
     Scanner *s = payload;
-    uint16_t flags = s->line_start | (s->cell_start << 1) | (s->statement_start << 2) | (s->rhs_ready << 3) |
+    uint32_t flags = s->line_start | (s->cell_start << 1) | (s->statement_start << 2) | (s->rhs_ready << 3) |
         (s->comment_line << 4) | (s->continued_line << 5) | (s->marker_prefix << 6) | (s->command_tail << 7) |
         (s->help_prefix << 8) | (s->suite_colon << 9) | (s->arguments_active << 10) | (s->conservative << 11) |
-        (s->magic_name_active << 12) | (s->option_pending << 13) | (s->option_escape << 14);
-    unsigned offset = 0; memcpy(buffer, &flags, 2); offset += 2;
+        (s->magic_name_active << 12) | (s->option_pending << 13) | (s->option_escape << 14) |
+        (s->command_backslash << 15) | (s->command_cr << 16);
+    unsigned offset = write_u32(buffer, 0, flags);
     buffer[offset++] = s->header_kind; buffer[offset++] = s->recent_length;
     buffer[offset++] = s->recent_length == 1 || s->recent_length == 2 ? s->recent[0] : 0;
     buffer[offset++] = s->recent_length == 2 ? s->recent[1] : 0;
@@ -642,17 +760,35 @@ unsigned tree_sitter_ipython_external_scanner_serialize(void *payload, char *buf
     buffer[offset++] = s->option_quote; buffer[offset++] = s->option_length;
     memcpy(buffer + offset, s->option_text, sizeof(s->option_text)); offset += sizeof(s->option_text);
     offset = write_u32(buffer, offset, s->bracket_depth); offset = write_u32(buffer, offset, (uint32_t)s->previous);
+    buffer[offset++] = s->help_prefix ? s->help_state : HELP_WORD;
     unsigned count_offset = offset; offset += 2; uint16_t count = 0;
     for (uint32_t i = 0; i < s->frames.size; i++) {
         Frame frame = s->frames.contents[i]; unsigned width = 1 + ((frame.flags & FIELD) ? 4 : 0);
         if (offset + width > TREE_SITTER_SERIALIZATION_BUFFER_SIZE) {
-            flags |= 1 << 11; memcpy(buffer, &flags, 2); break;
+            flags |= 1 << 11; write_u32(buffer, 0, flags); break;
         }
         buffer[offset++] = (char)frame.flags;
         if (frame.flags & FIELD) offset = write_u32(buffer, offset, frame.depth);
         ++count;
     }
     memcpy(buffer + count_offset, &count, 2); return offset;
+}
+static bool valid_serialized_state(const char *buffer, unsigned length) {
+    if (!buffer || length < SERIALIZED_HEADER_SIZE || length > TREE_SITTER_SERIALIZATION_BUFFER_SIZE) return false;
+    if ((uint8_t)buffer[4] > HEADER_MAGIC || (uint8_t)buffer[5] > 3 ||
+        (uint8_t)buffer[8] > MAGIC_CONFIG || (uint8_t)buffer[9] > MAGIC_PYTHON ||
+        (uint8_t)buffer[10] > OPTION_VALUE || (uint8_t)buffer[12] >= 32 ||
+        buffer[44] || (uint8_t)buffer[53] > HELP_AFTER_INDEX) return false;
+    uint16_t count; memcpy(&count, buffer + SERIALIZED_HEADER_SIZE - 2, 2);
+    unsigned offset = SERIALIZED_HEADER_SIZE;
+    for (uint16_t i = 0; i < count; ++i) {
+        if (offset >= length) return false;
+        uint8_t flags = (uint8_t)buffer[offset++];
+        if (flags & 128) return false;
+        if (flags & FIELD) offset += 4;
+        if (offset > length) return false;
+    }
+    return offset == length;
 }
 void tree_sitter_ipython_external_scanner_deserialize(void *payload, const char *buffer, unsigned length) {
     Scanner *s = payload; s->frames.size = 0; s->bracket_depth = 0; s->previous = 0;
@@ -662,19 +798,22 @@ void tree_sitter_ipython_external_scanner_deserialize(void *payload, const char 
     s->help_prefix = s->suite_colon = s->arguments_active = s->conservative = false;
     s->magic_kind = MAGIC_RAW; s->magic_phase = MAGIC_NONE; s->magic_name_active = s->option_pending = s->option_escape = false;
     s->option_mode = s->option_quote = s->option_length = 0; memset(s->option_text, 0, sizeof(s->option_text));
+    s->command_backslash = s->command_cr = false; s->help_state = HELP_WORD;
     if (!length) return;
-    if (length < 53) return;
-    unsigned offset = 0; uint16_t flags; memcpy(&flags, buffer, 2); offset += 2;
+    if (!valid_serialized_state(buffer, length)) return;
+    unsigned offset = 0; uint32_t flags = read_u32(buffer, &offset);
     s->line_start = flags & 1; s->cell_start = flags & 2; s->statement_start = flags & 4; s->rhs_ready = flags & 8;
     s->comment_line = flags & 16; s->continued_line = flags & 32; s->marker_prefix = flags & 64; s->command_tail = flags & 128;
     s->help_prefix = flags & 256; s->suite_colon = flags & 512; s->arguments_active = flags & 1024; s->conservative = flags & 2048;
     s->magic_name_active = flags & 4096; s->option_pending = flags & 8192; s->option_escape = flags & 16384;
+    s->command_backslash = flags & 32768; s->command_cr = flags & 65536;
     s->header_kind = buffer[offset++]; s->recent_length = buffer[offset++];
     s->recent[0] = buffer[offset++]; s->recent[1] = buffer[offset++];
     s->magic_kind = buffer[offset++]; s->magic_phase = buffer[offset++]; s->option_mode = buffer[offset++];
     s->option_quote = buffer[offset++]; s->option_length = buffer[offset++];
     memcpy(s->option_text, buffer + offset, sizeof(s->option_text)); offset += sizeof(s->option_text);
     s->bracket_depth = read_u32(buffer, &offset); s->previous = (int32_t)read_u32(buffer, &offset);
+    s->help_state = buffer[offset++];
     uint16_t count; memcpy(&count, buffer + offset, 2); offset += 2;
     for (uint16_t i = 0; i < count && offset < length; i++) {
         Frame frame = { .flags = (uint8_t)buffer[offset++] };
