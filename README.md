@@ -39,6 +39,8 @@ Line magic statements and expressions preserve the percent prefix, optional name
 
 Body chunks, commands, names, arguments, marker prefixes and titles consume at most 4096 Unicode codepoints per external token. Ordinary comment rows, Markdown headings and first words are resolved within multi-row body chunks; only marker and suffix-help candidates need separate prefix tokens. Long prefixes and suffix-help names continue through hidden tokens; no marker-length limit is imposed. The scanner stores quote, f-string, bracket, help-target, physical-line and logical-command continuation context, without seeking backwards through a long row. Hidden chunks do not create a public node for every line.
 
+Python template strings introduced in 3.14 follow the same interpolation boundaries as f-strings, including t/T and raw rt/tr prefixes. A marker inside a nested quoted interpolation remains string content rather than a new cell.
+
 Opaque chunks expose anonymous opaque_fragment tokens. After editing a tree, parseOptions() splits the existing input ranges at those edited fragment ends. These adjacent ranges include every source character; they provide alignment hints rather than exclude text. The scanner stops at a hint before continuing into the next range, so character, newline and whole-row edits reuse the following fragments without a cumulative row counter. Without alignment options, parsing remains correct but an insertion can shift chunk boundaries to EOF.
 
 To bound fragmentation during repeated edits, the helper marks small contiguous groups of 64 fragments dirty with an equal-width tree edit. Each group spans at most 4096 source units and the helper touches at most eight groups per parse. This changes only the old tree's reuse metadata, not source text, so the next parse coalesces the region into bounded larger fragments. A current source string lets the helper protect CRLF and surrogate pairs while preparing cuts and compaction regions.
@@ -56,7 +58,7 @@ parser.setLanguage(IPython);
 const tree = parser.parse('# %% Code\nvalue = %pwd\n');
 ```
 
-For incremental parsing, call tree.edit() with the usual Tree-sitter edit and pass IPython.parseOptions(tree, updatedSource) as the third parser.parse() argument. Pass existing semantic includedRanges as the helper's third argument when parsing only selected source ranges. The same helper accepts a web-tree-sitter tree. Editors can use queries/parse-boundaries.scm to collect the equivalent parse.boundary captures.
+For incremental parsing, call tree.edit() with the usual Tree-sitter edit and pass IPython.parseOptions(tree, updatedSource) as the third parser.parse() argument. Pass existing semantic includedRanges as the helper's third argument when parsing only selected source ranges. Without a current source string the helper preserves those semantic ranges and adds no alignment cuts, because edited endpoints alone cannot detect CRLF or surrogate pairs. The same helper accepts a web-tree-sitter tree. Editors can use queries/parse-boundaries.scm to collect the equivalent parse.boundary captures.
 
 ## Building
 

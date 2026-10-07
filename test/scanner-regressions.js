@@ -51,6 +51,51 @@ module.exports = function scannerRegressions(runtime, createParser) {
     release(next, parser);
   }
 
+  test(`${runtime}: template and format string interpolation protects nested marker text`, () => {
+    for (const prefix of ['t', 'T', 'rt', 'tr', 'rT', 'tR', 'RT', 'TR', 'f', 'F', 'rf', 'fr']) {
+      const parser = createParser();
+      const source =
+        'value = ' + prefix + '"""{f"""\n# %% [raw] Inside\n"""}\n"""\n# %% Actual\nx=1\n';
+      const tree = parse(source, parser);
+      assert.deepEqual(
+        tree.rootNode.descendantsOfType('cell_marker').map((node) => node.text),
+        ['# %% Actual'],
+        prefix,
+      );
+      assert.equal(tree.rootNode.descendantsOfType('raw_cell').length, 0, prefix);
+      release(tree, parser);
+      const at = 'value = '.length;
+      incremental(source, at, prefix.length, 'f');
+      incremental(source, at, prefix.length, 't');
+      incremental(source, at, prefix.length, 'r');
+    }
+  });
+  test(`${runtime}: template interpolation survives quote and nested-field chunk crossings`, () => {
+    for (const prefix of ['t', 'T', 'rt', 'tr']) {
+      for (const quoteAt of [CHUNK - 2, CHUNK - 1, CHUNK, CHUNK + 1]) {
+        const source =
+          'value = ' +
+          ' '.repeat(quoteAt - 8 - prefix.length) +
+          prefix +
+          '"""' +
+          'x'.repeat(CHUNK * 2) +
+          '{f"""\n# %% [raw] Inside\n' +
+          'y'.repeat(CHUNK * 2) +
+          '\n"""}\n"""\n# %% Actual\nx=1\n';
+        const parser = createParser();
+        const tree = parse(source, parser);
+        assert.deepEqual(
+          tree.rootNode.descendantsOfType('cell_marker').map((node) => node.text),
+          ['# %% Actual'],
+        );
+        release(tree, parser);
+        incremental(source, quoteAt - prefix.length, prefix.length, 'fr');
+        incremental(source, source.indexOf('Inside'), 1, 'i');
+        incremental(source, source.indexOf('y'.repeat(8)) + CHUNK, 0, 'z');
+      }
+    }
+  });
+
   test(`${runtime}: suffix help covers magic, wildcard and integer-subscript targets`, () => {
     for (const target of [
       'np.*?',

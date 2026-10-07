@@ -1,0 +1,41 @@
+==================
+Template interpolation keeps same-quote nested strings opaque
+==================
+
+value = t"""{f"""
+# %% [raw] Inside
+"""}
+"""
+# %% Actual
+x=1
+
+---
+
+(module
+  (code_cell (python_cell_body))
+  (code_cell
+    (cell_marker (cell_marker_marker) (cell_marker_name))
+    (python_cell_body)))
+
+==================
+Raw template prefixes preserve nested string boundaries
+==================
+
+first = rt"""{f"""
+# %% [markdown] Inside first
+"""}
+"""
+second = TR"""{f"""
+# %% [raw] Inside second
+"""}
+"""
+# %% Actual
+x=1
+
+---
+
+(module
+  (code_cell (python_cell_body))
+  (code_cell
+    (cell_marker (cell_marker_marker) (cell_marker_name))
+    (python_cell_body)))

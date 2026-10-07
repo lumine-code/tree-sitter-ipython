@@ -56,7 +56,9 @@ function coalescingRegions(fragments, source, includedRanges) {
 // Call after tree.edit(). Splitting ranges never removes input: every new
 // range is adjacent to its neighbour inside the original semantic range.
 module.exports = function parseOptions(tree, source, includedRanges) {
-  if (!tree) return includedRanges ? { includedRanges } : undefined;
+  // Edited endpoints alone cannot detect a newly joined CRLF or surrogate
+  // pair. Without current text, preserve the caller's semantic ranges only.
+  if (!tree || typeof source !== 'string') return includedRanges ? { includedRanges } : undefined;
   let root = tree.rootNode;
   const limits = includedRanges || [
     {
@@ -66,16 +68,17 @@ module.exports = function parseOptions(tree, source, includedRanges) {
       endPosition: root.endPosition,
     },
   ];
-  if (typeof tree.edit === 'function' && typeof source === 'string') {
-    // Capture plain coordinates before invalidating anything: node handles
-    // themselves are stale after tree.edit(), even for an equal-width edit.
-    const fragments = root.descendantsOfType('opaque_fragment').map((node) => ({
-      startIndex: node.startIndex,
-      endIndex: node.endIndex,
-      startPosition: node.startPosition,
-      endPosition: node.endPosition,
-    }));
-    for (const region of coalescingRegions(fragments, source, limits))
+  // Capture plain coordinates before invalidating anything: node handles
+  // themselves are stale after tree.edit(), even for an equal-width edit.
+  let fragments = root.descendantsOfType('opaque_fragment').map((node) => ({
+    startIndex: node.startIndex,
+    endIndex: node.endIndex,
+    startPosition: node.startPosition,
+    endPosition: node.endPosition,
+  }));
+  if (typeof tree.edit === 'function') {
+    const regions = coalescingRegions(fragments, source, limits);
+    for (const region of regions)
       tree.edit({
         startIndex: region.startIndex,
         oldEndIndex: region.endIndex,
@@ -84,11 +87,17 @@ module.exports = function parseOptions(tree, source, includedRanges) {
         oldEndPosition: region.endPosition,
         newEndPosition: region.endPosition,
       });
-    root = tree.rootNode;
+    if (regions.length) {
+      root = tree.rootNode;
+      fragments = root.descendantsOfType('opaque_fragment').map((node) => ({
+        endIndex: node.endIndex,
+        endPosition: node.endPosition,
+      }));
+    }
   }
-  const boundaries = root.descendantsOfType('opaque_fragment').map((node) => ({
-    index: node.endIndex,
-    position: node.endPosition,
+  const boundaries = fragments.map((fragment) => ({
+    index: fragment.endIndex,
+    position: fragment.endPosition,
   }));
   if (!boundaries.length) return includedRanges ? { includedRanges } : undefined;
   const result = [];

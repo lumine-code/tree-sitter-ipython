@@ -65,7 +65,8 @@ static uint8_t string_flags(Scanner *s, int32_t quote) {
     uint8_t flags = quote == '\'' ? QUOTE_SINGLE : QUOTE_DOUBLE;
     if (s->recent_length <= 2) {
         for (uint8_t i = 0; i < s->recent_length; i++) {
-            if (s->recent[i] == 'f' || s->recent[i] == 'F') flags |= FORMAT;
+            // Template strings share interpolation boundaries with f-strings.
+            if (s->recent[i] == 'f' || s->recent[i] == 'F' || s->recent[i] == 't' || s->recent[i] == 'T') flags |= FORMAT;
             if (s->recent[i] == 'r' || s->recent[i] == 'R') flags |= RAW;
         }
     }

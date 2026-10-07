@@ -76,3 +76,26 @@ test('local compaction selects bounded contiguous short fragments without semant
     0,
   );
 });
+test('missing current source disables unsafe hints and preserves semantic ranges', () => {
+  const semantic = [range(0, 4096), range(8192, 9000)];
+  const previous = tree(9000, [4096, 8192, 9000]);
+  previous.rootNode.descendantsOfType = () => {
+    throw new Error('No endpoint lookup without source');
+  };
+  assert.equal(parseOptions(previous), undefined);
+  assert.deepEqual(parseOptions(previous, undefined, semantic), { includedRanges: semantic });
+});
+test('unaltered fragment density needs only one tree traversal', () => {
+  const previous = tree(9000, [4096, 8192, 9000]);
+  const lookup = previous.rootNode.descendantsOfType;
+  let traversals = 0;
+  previous.rootNode.descendantsOfType = () => {
+    traversals++;
+    return lookup();
+  };
+  previous.edit = () => {
+    throw new Error('No compaction needed');
+  };
+  parseOptions(previous, 'x'.repeat(9000));
+  assert.equal(traversals, 1);
+});
