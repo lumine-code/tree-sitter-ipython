@@ -374,5 +374,9 @@
   {
     "type": "cell_marker_metadata",
     "named": true
+  },
+  {
+    "type": "opaque_fragment",
+    "named": false
   }
 ]

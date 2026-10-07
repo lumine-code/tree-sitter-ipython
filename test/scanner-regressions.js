@@ -1,5 +1,6 @@
 const assert = require('node:assert/strict');
 const { test } = require('node:test');
+const parseOptions = require('../bindings/node/parse-options');
 
 const CHUNK = 4096;
 const pointAt = (source, index) => ({
@@ -19,7 +20,7 @@ const namedGeometry = (tree) => {
 
 module.exports = function scannerRegressions(runtime, createParser) {
   function parse(source, parser = createParser(), oldTree) {
-    const tree = parser.parse(source, oldTree);
+    const tree = parser.parse(source, oldTree, oldTree ? parseOptions(oldTree, source) : undefined);
     assert.equal(tree.rootNode.hasError, false, source.slice(0, 160));
     assert.equal(tree.rootNode.endIndex, source.length);
     return tree;
@@ -160,13 +161,12 @@ module.exports = function scannerRegressions(runtime, createParser) {
       parser.setLogger((message, data) => {
         if (message.startsWith('lexed_lookahead')) {
           lexed++;
-          if (data?.sym === '_cell_body_chunk' || message.includes('sym:_cell_body_chunk'))
-            chunks++;
+          if (data?.sym === 'opaque_fragment' || message.includes('sym:opaque_fragment')) chunks++;
         }
       });
       const tree = parse(source, parser);
       assert.ok(lexed < 320, `${header}: ${lexed} tokens for 1 MiB`);
-      assert.ok(chunks < 270);
+      assert.equal(chunks, 256);
       parser.setLogger(null);
       const offset = header.length + 2;
       tree.edit({
@@ -201,17 +201,21 @@ module.exports = function scannerRegressions(runtime, createParser) {
       release(fresh, freshParser);
     }
   });
-  test(`${runtime}: opaque row anchors keep first-row character edits local at 1 and 8 MiB`, (context) => {
+  test(`${runtime}: aligned opaque fragments keep character and row edits local at 1 and 8 MiB`, (context) => {
     const header = '# %% [raw]\n';
     for (const size of [1048576, 8388608]) {
       const source = header + '# x\n'.repeat(size / 4) + '# %% End\nx=1\n';
       const parser = createParser();
-      const offset = header.length + 2;
-      for (const [kind, removed, replacement] of [
-        ['replace', 1, 'y'],
-        ['insert', 0, 'y'],
-        ['delete', 1, ''],
+      for (const [kind, at, removed, replacement] of [
+        ['replace', 2, 1, 'y'],
+        ['insert', 2, 0, 'y'],
+        ['delete', 2, 1, ''],
+        ['enter', 3, 0, '\n'],
+        ['join', 3, 1, ''],
+        ['insert-row', 0, 0, '# x\n'],
+        ['delete-row', 0, 4, ''],
       ]) {
+        const offset = header.length + at;
         const tree = parse(source, parser);
         const changed = source.slice(0, offset) + replacement + source.slice(offset + removed);
         tree.edit({
@@ -241,7 +245,7 @@ module.exports = function scannerRegressions(runtime, createParser) {
       parser.delete?.();
     }
   });
-  test(`${runtime}: opaque row anchors preserve CRLF, Unicode and long-row budget splits`, () => {
+  test(`${runtime}: fragment alignment preserves CRLF, Unicode and long-row budget splits`, () => {
     const header = '# %% [raw]\n';
     for (const row of [
       '# x\r\n',
@@ -266,9 +270,48 @@ module.exports = function scannerRegressions(runtime, createParser) {
         const offset = header.length + 3;
         incremental(source, offset, removed, replacement);
         context.diagnostic(
-          `${size} ${kind}: physical-row changes may replay opaque chunks until the next cell marker`,
+          `${size} ${kind}: aligned incremental geometry matches a fresh scaffold`,
         );
       }
     }
+  });
+  test(`${runtime}: repeated Enter edits coalesce local fragments without changing source ownership`, (context) => {
+    const parser = createParser();
+    let source = '# %% [raw]\n' + '# x\n'.repeat(262144) + '# %% End\nx=1\n';
+    let tree = parse(source, parser);
+    let maximum = 0,
+      maxLexed = 0;
+    for (let step = 0; step < 300; step++) {
+      const offset = 14;
+      tree.edit({
+        startIndex: offset,
+        oldEndIndex: offset,
+        newEndIndex: offset + 1,
+        startPosition: { row: 1, column: 3 },
+        oldEndPosition: { row: 1, column: 3 },
+        newEndPosition: { row: 2, column: 0 },
+      });
+      source = source.slice(0, offset) + '\n' + source.slice(offset);
+      let lexed = 0;
+      parser.setLogger((message) => {
+        if (message.startsWith('lexed_lookahead')) lexed++;
+      });
+      const next = parse(source, parser, tree);
+      parser.setLogger(null);
+      release(tree);
+      tree = next;
+      maximum = Math.max(maximum, tree.rootNode.descendantsOfType('opaque_fragment').length);
+      maxLexed = Math.max(maxLexed, lexed);
+      if (step % 50 === 0) {
+        const reference = createParser();
+        const fresh = parse(source, reference);
+        assert.deepEqual(namedGeometry(tree), namedGeometry(fresh));
+        release(fresh, reference);
+      }
+    }
+    assert.ok(maximum < 350, `Local compaction bounds fragments: ${maximum}`);
+    assert.ok(maxLexed < 24, `Compaction stays local: ${maxLexed}`);
+    context.diagnostic(JSON.stringify({ maximum, maxLexed }));
+    release(tree, parser);
   });
 };

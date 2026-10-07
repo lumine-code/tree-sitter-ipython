@@ -131,7 +131,7 @@ static const char * const ts_symbol_names[] = {
   [sym__python_magic_body_chunk] = "_python_magic_body_chunk",
   [sym__padding_chunk] = "_padding_chunk",
   [sym__python_chunk] = "_python_chunk",
-  [sym__cell_body_chunk] = "_cell_body_chunk",
+  [sym__cell_body_chunk] = "opaque_fragment",
   [sym__magic_statement_start] = "%",
   [sym__shell_statement_start] = "_shell_statement_start",
   [sym__help_statement_start] = "_help_statement_start",
@@ -382,8 +382,8 @@ static const TSSymbolMetadata ts_symbol_metadata[] = {
     .named = true,
   },
   [sym__cell_body_chunk] = {
-    .visible = false,
-    .named = true,
+    .visible = true,
+    .named = false,
   },
   [sym__magic_statement_start] = {
     .visible = true,

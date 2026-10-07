@@ -434,7 +434,7 @@ test('keeps large opaque bodies compact across tiny lines, CRLF and Unicode', ()
   }
 });
 test('compiles the scaffold queries without Python node types', () => {
-  for (const name of ['highlights.scm', 'tags.scm']) {
+  for (const name of ['highlights.scm', 'tags.scm', 'parse-boundaries.scm']) {
     const source = fs.readFileSync(path.join(__dirname, '..', '..', 'queries', name), 'utf8');
     assert.doesNotThrow(() => new Parser.Query(IPython, source));
   }

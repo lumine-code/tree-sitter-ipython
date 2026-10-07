@@ -39,9 +39,9 @@ Line magic statements and expressions preserve the percent prefix, optional name
 
 Body chunks, commands, names, arguments, marker prefixes and titles consume at most 4096 Unicode codepoints per external token. Ordinary comment rows, Markdown headings and first words are resolved within multi-row body chunks; only marker and suffix-help candidates need separate prefix tokens. Long prefixes and suffix-help names continue through hidden tokens; no marker-length limit is imposed. The scanner stores quote, f-string, bracket, help-target, physical-line and logical-command continuation context, without seeking backwards through a long row. Hidden chunks do not create a public node for every line.
 
-Opaque bodies also bound a run of partial-row chunks to 2048 physical newlines. Finishing a complete row resets that budget. These stable row anchors let character insertions and deletions reuse the following chunks instead of shifting every token boundary to EOF. CRLF counts as one physical newline even when split across tokens; the 4096-codepoint limit still bounds a single long row.
+Opaque chunks expose anonymous opaque_fragment tokens. After editing a tree, parseOptions() splits the existing input ranges at those edited fragment ends. These adjacent ranges include every source character; they provide alignment hints rather than exclude text. The scanner stops at a hint before continuing into the next range, so character, newline and whole-row edits reuse the following fragments without a cumulative row counter. Without alignment options, parsing remains correct but an insertion can shift chunk boundaries to EOF.
 
-Adding or removing a physical newline changes the row phase and may replay the opaque body up to its next cell marker. Stable reuse therefore applies to ordinary character edits, rather than edits that change the number of rows or alter a reserved marker.
+To bound fragmentation during repeated edits, the helper marks small contiguous groups of 64 fragments dirty with an equal-width tree edit. Each group spans at most 4096 source units and the helper touches at most eight groups per parse. This changes only the old tree's reuse metadata, not source text, so the next parse coalesces the region into bounded larger fragments. A current source string lets the helper protect CRLF and surrogate pairs while preparing cuts and compaction regions.
 
 The scaffold deliberately accepts ordinary malformed Python as a Python body. Native Python injections handle Python syntax and may recover around omitted IPython-only statements. The shared analysis projection in language-ipython keeps statement suites and RHS assignments valid for Python tooling without changing source or execution.
 
@@ -55,6 +55,8 @@ const parser = new Parser();
 parser.setLanguage(IPython);
 const tree = parser.parse('# %% Code\nvalue = %pwd\n');
 ```
+
+For incremental parsing, call tree.edit() with the usual Tree-sitter edit and pass IPython.parseOptions(tree, updatedSource) as the third parser.parse() argument. Pass existing semantic includedRanges as the helper's third argument when parsing only selected source ranges. The same helper accepts a web-tree-sitter tree. Editors can use queries/parse-boundaries.scm to collect the equivalent parse.boundary captures.
 
 ## Building
 

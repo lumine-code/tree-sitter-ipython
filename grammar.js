@@ -62,7 +62,7 @@ module.exports = grammar({
       $.magic_statement, $.shell_statement, $.help_statement,
       $.magic_expression, $.shell_expression,
     )),
-    cell_body: $ => repeat1(choice($._cell_body_chunk, $._body_prefix)),
+    cell_body: $ => repeat1(choice(alias($._cell_body_chunk, 'opaque_fragment'), $._body_prefix)),
     _body_prefix: $ => seq(choice($._prefix_hash, $._body_hash), repeat($._prefix_space)),
     cell_magic: $ => choice(
       seq(alias($._python_cell_magic, '%%'), field('name', $.cell_magic_name),

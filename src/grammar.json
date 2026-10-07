@@ -312,8 +312,13 @@
         "type": "CHOICE",
         "members": [
           {
-            "type": "SYMBOL",
-            "name": "_cell_body_chunk"
+            "type": "ALIAS",
+            "content": {
+              "type": "SYMBOL",
+              "name": "_cell_body_chunk"
+            },
+            "named": false,
+            "value": "opaque_fragment"
           },
           {
             "type": "SYMBOL",

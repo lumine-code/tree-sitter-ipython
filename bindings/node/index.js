@@ -11,3 +11,4 @@ try {
 } catch {
   // node-types.json is optional in prebuilt packages.
 }
+module.exports.parseOptions = require('./parse-options');

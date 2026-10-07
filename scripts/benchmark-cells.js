@@ -48,7 +48,7 @@ function measure(size, shape) {
       });
       const nextSource = source.slice(0, index) + replacement + source.slice(index + oldLength);
       const started = performance.now();
-      const next = parser.parse(nextSource, edited);
+      const next = parser.parse(nextSource, edited, language.parseOptions(edited, nextSource));
       const durationMs = performance.now() - started;
       validate(next, nextSource);
       edits.push({ fraction, kind, durationMs });

@@ -4,6 +4,7 @@ const fs = require('node:fs');
 const path = require('node:path');
 const { performance } = require('node:perf_hooks');
 const Parser = require('tree-sitter');
+const parseOptions = require('../bindings/node/parse-options');
 
 const options = Object.fromEntries(
   process.argv.slice(2).map((arg) => arg.replace(/^--/, '').split('=')),
@@ -146,39 +147,34 @@ function astDigest(tree, source) {
     node.endIndex,
     node.startPosition,
     node.endPosition,
-    node.childCount,
     node.namedChildCount,
   ];
-  const proof = { root: structure(root), windows: [] };
-  for (const fraction of [0, 0.25, 0.5, 0.75, 1]) {
-    const index = Math.min(source.length - 1, Math.floor(source.length * fraction));
-    const leaf = root.descendantForIndex(index);
-    const window = { fraction, ancestors: [], nodes: [], extraFlags: [] };
-    for (let node = leaf; node; node = node.parent) window.ancestors.push(structure(node));
-    const container = leaf.parent?.childCount <= 32 ? leaf.parent : leaf;
-    const cursor = container.walk();
-    for (let count = 0; count < 128; count++) {
-      const node = cursor.currentNode;
-      window.nodes.push([...structure(node), cursor.currentFieldName]);
-      window.extraFlags.push(node.isExtra);
-      if (cursor.gotoFirstChild()) continue;
-      while (!cursor.gotoNextSibling()) {
-        if (!cursor.gotoParent()) break;
+  const proof = [];
+  const cursor = root.walk();
+  let visiting = true;
+  while (visiting) {
+    const node = cursor.currentNode;
+    if (node.isNamed)
+      proof.push([
+        ...structure(node),
+        cursor.currentFieldName,
+        node.type === 'cell_body' ? digest(source.slice(node.startIndex, node.endIndex)) : null,
+      ]);
+    assert.ok(proof.length <= 512, 'Benchmark fixtures must have bounded named scaffolds');
+    // Alignment fragments are anonymous implementation detail. Their number
+    // and boundaries can change while the named source scaffold stays exact.
+    if (node.type !== 'cell_body' && cursor.gotoFirstChild()) continue;
+    while (!cursor.gotoNextSibling()) {
+      if (!cursor.gotoParent()) {
+        visiting = false;
+        break;
       }
-      if (cursor.currentNode.id === container.id) break;
     }
-    proof.windows.push(window);
   }
-  const extraFlags = proof.windows.map((window) => window.extraFlags);
-  const visible = {
-    ...proof,
-    windows: proof.windows.map(({ extraFlags: _extraFlags, ...window }) => window),
-  };
   return {
-    sha256: digest(JSON.stringify(visible)),
-    extraFlags,
+    sha256: digest(JSON.stringify(proof)),
     scope:
-      'root metadata and five deterministic leaf/ancestor windows; up to 128 descendants per window; type/named/positions/indices/counts/fields; excludes isExtra',
+      'complete named scaffold up to 512 nodes; type/positions/indices/named counts/fields plus opaque source hashes; excludes anonymous fragment layout',
   };
 }
 
@@ -258,7 +254,7 @@ function measure(variant, item, series) {
         global.gc();
         tree.edit(forward);
         const started = performance.now();
-        let next = parser.parse(changed, tree);
+        let next = parser.parse(changed, tree, parseOptions(tree, changed));
         const duration = performance.now() - started;
         validate(next, item);
         if (sample >= 0) values.push(duration);
@@ -266,7 +262,7 @@ function measure(variant, item, series) {
         // eslint-disable-next-line no-useless-assignment -- Release native trees before unmeasured GC.
         tree = null;
         next.edit(reverse);
-        tree = parser.parse(item.source, next);
+        tree = parser.parse(item.source, next, parseOptions(next, item.source));
         releaseTree(next);
         // eslint-disable-next-line no-useless-assignment -- Release native trees before unmeasured GC.
         next = null;
