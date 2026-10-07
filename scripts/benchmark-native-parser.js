@@ -70,6 +70,10 @@ function fixture(name, size) {
     else if (name === 'opaque-tiny-lines') payload = 'x\n'.repeat(Math.ceil(size / 2));
     else if (name === 'opaque-crlf') payload = 'x\r\n'.repeat(Math.ceil(size / 3));
     else if (name === 'opaque-emoji') payload = '\u{1f600}\r\n'.repeat(Math.ceil(size / 6));
+    else if (name === 'opaque-headings') {
+      prefix = '# %% [markdown]\n';
+      payload = '# x\n'.repeat(Math.ceil(size / 4));
+    } else if (name === 'opaque-hash-rows') payload = '#\n'.repeat(Math.ceil(size / 2));
     else if (name === 'opaque-eof') payload = 'x'.repeat(size);
     else payload = `#${' '.repeat(size)}%% Payload`;
     suffix = name === 'opaque-eof' ? '' : '\n# %% Next\nresult = 1\n';
@@ -84,9 +88,10 @@ function fixture(name, size) {
     else if (name === 'opaque-emoji') at -= at % 4;
     else if (name !== 'opaque-pathological-prefix') {
       if (fraction === 1) {
-        while (at > 0 && payload[at] !== 'x') at--;
+        while (at > 0 && payload[at] !== (name === 'opaque-hash-rows' ? '#' : 'x')) at--;
       } else {
-        while (at < payload.length && payload[at] !== 'x') at++;
+        while (at < payload.length && payload[at] !== (name === 'opaque-hash-rows' ? '#' : 'x'))
+          at++;
       }
     }
     return { fraction, index: prefix.length + at };
@@ -102,15 +107,18 @@ function pointAt(source, index) {
 function validate(tree, item) {
   const root = tree.rootNode;
   assert.equal(root.hasError, false, item.name);
-  if (item.name !== 'opaque-eof')
-    assert.equal(root.namedChild(root.namedChildCount - 1).type, 'assignment', item.name);
+  const finalCell = root.namedChild(root.namedChildCount - 1);
+  if (item.name !== 'opaque-eof') {
+    assert.equal(finalCell.type, 'code_cell', item.name);
+    assert.equal(finalCell.childForFieldName('body')?.type, 'python_cell_body', item.name);
+  }
   if (item.opaque) {
-    assert.equal(root.namedChild(0).type, 'raw_cell');
+    assert.equal(
+      root.namedChild(0).type,
+      item.name === 'opaque-headings' ? 'markdown_cell' : 'raw_cell',
+    );
     if (item.name !== 'opaque-eof')
-      assert.equal(
-        root.namedChild(root.namedChildCount - 2).childForFieldName('name').text,
-        'Next',
-      );
+      assert.equal(finalCell.childForFieldName('marker').childForFieldName('name').text, 'Next');
   }
 }
 
@@ -127,10 +135,8 @@ function summarize(values) {
   };
 }
 
-// Bounded proof samples five deterministic leaf windows rather than traversing
-// the entire multi-million-node Python tree. Full corpus compatibility is a
-// separate test. isExtra is reported separately for the declared top-level
-// comment difference, and excluded from the visible AST compatibility hash.
+// Sample the scaffold at five deterministic windows. Python syntax is opaque
+// here, so controls compare source spans and document structure, not Python AST.
 function astDigest(tree, source) {
   const root = tree.rootNode;
   const structure = (node) => [
@@ -294,6 +300,8 @@ const opaqueNames = [
   'opaque-tiny-lines',
   'opaque-crlf',
   'opaque-emoji',
+  'opaque-headings',
+  'opaque-hash-rows',
   'opaque-eof',
   'opaque-pathological-prefix',
 ];
@@ -310,9 +318,7 @@ fs.writeSync(
 const fixtures = sizes.flatMap((size) => names.map((name) => fixture(name, size)));
 for (const item of fixtures) {
   fs.writeSync(2, `phase=proof fixture=${item.name} size=${item.size}\n`);
-  const proofs = (
-    item.opaque ? variants.filter((variant) => variant.name === 'candidate') : variants
-  ).map((variant) => {
+  const proofs = variants.map((variant) => {
     const parser = new Parser();
     parser.setLanguage(variant.language);
     fs.writeSync(
@@ -334,17 +340,14 @@ for (const item of fixtures) {
     global.gc();
     return { variant: variant.name, ...value, setupParseMs, setupProofMs };
   });
-  if (!item.opaque)
-    assert.equal(proofs[0].sha256, proofs[1].sha256, `${item.name} sampled visible AST changed`);
+  assert.equal(proofs[0].sha256, proofs[1].sha256, `${item.name} sampled scaffold AST changed`);
   item.astProofs = proofs;
 }
 for (let series = 1; series <= seriesCount; series++) {
   const order = series % 2 ? variants : [...variants].reverse();
   const corpusOrder = series % 2 ? fixtures : [...fixtures].reverse();
   for (const item of corpusOrder) {
-    for (const variant of item.opaque
-      ? variants.filter((entry) => entry.name === 'candidate')
-      : order) {
+    for (const variant of order) {
       fs.writeSync(
         2,
         `series=${series} variant=${variant.name} fixture=${item.name} size=${item.size}\n`,
