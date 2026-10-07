@@ -201,4 +201,74 @@ module.exports = function scannerRegressions(runtime, createParser) {
       release(fresh, freshParser);
     }
   });
+  test(`${runtime}: opaque row anchors keep first-row character edits local at 1 and 8 MiB`, (context) => {
+    const header = '# %% [raw]\n';
+    for (const size of [1048576, 8388608]) {
+      const source = header + '# x\n'.repeat(size / 4) + '# %% End\nx=1\n';
+      const parser = createParser();
+      const offset = header.length + 2;
+      for (const [kind, removed, replacement] of [
+        ['replace', 1, 'y'],
+        ['insert', 0, 'y'],
+        ['delete', 1, ''],
+      ]) {
+        const tree = parse(source, parser);
+        const changed = source.slice(0, offset) + replacement + source.slice(offset + removed);
+        tree.edit({
+          startIndex: offset,
+          oldEndIndex: offset + removed,
+          newEndIndex: offset + replacement.length,
+          startPosition: pointAt(source, offset),
+          oldEndPosition: pointAt(source, offset + removed),
+          newEndPosition: pointAt(changed, offset + replacement.length),
+        });
+        let lexed = 0;
+        parser.setLogger((message) => {
+          if (message.startsWith('lexed_lookahead')) lexed++;
+        });
+        const next = parse(changed, parser, tree);
+        parser.setLogger(null);
+        assert.ok(lexed < 24, `${size} ${kind}: ${lexed} re-lexed tokens`);
+        const freshParser = createParser();
+        const fresh = parse(changed, freshParser);
+        assert.deepEqual(namedGeometry(next), namedGeometry(fresh));
+        assert.equal(next.rootNode.descendantsOfType('cell_body')[0].namedChildCount, 0);
+        context.diagnostic(JSON.stringify({ size, kind, lexed }));
+        release(tree);
+        release(next);
+        release(fresh, freshParser);
+      }
+      parser.delete?.();
+    }
+  });
+  test(`${runtime}: opaque row anchors preserve CRLF, Unicode and long-row budget splits`, () => {
+    const header = '# %% [raw]\n';
+    for (const row of [
+      '# x\r\n',
+      '# x\r',
+      '# 😀\n',
+      'x'.repeat(CHUNK - 1) + '\r\n',
+      'x'.repeat(CHUNK + 1) + '\n',
+    ]) {
+      const source = header + row.repeat(2050) + '# %% End\nx=1\n';
+      incremental(source, header.length, 0, 'y');
+      incremental(source, header.length + 2, 1, '');
+    }
+  });
+  test(`${runtime}: adding or joining opaque physical rows preserves a fresh scaffold`, (context) => {
+    const header = '# %% [raw]\n';
+    for (const size of [1048576, 8388608]) {
+      const source = header + '# x\n'.repeat(size / 4) + '# %% End\nx=1\n';
+      for (const [kind, removed, replacement] of [
+        ['split', 0, '\n'],
+        ['join', 1, ''],
+      ]) {
+        const offset = header.length + 3;
+        incremental(source, offset, removed, replacement);
+        context.diagnostic(
+          `${size} ${kind}: physical-row changes may replay opaque chunks until the next cell marker`,
+        );
+      }
+    }
+  });
 };

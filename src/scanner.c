@@ -22,7 +22,8 @@ enum { MAGIC_NONE, MAGIC_OPTIONS, MAGIC_ARGUMENTS, MAGIC_PYTHON };
 enum { OPTION_NONE, OPTION_DASH, OPTION_SHORT, OPTION_LONG, OPTION_ATTACHED, OPTION_VALUE };
 enum { HELP_WORD, HELP_DOT, HELP_INDEX, HELP_SIGN, HELP_DIGITS, HELP_AFTER_INDEX };
 #define CHUNK_LIMIT 4096
-#define SERIALIZED_HEADER_SIZE 56
+#define OPAQUE_ROW_LIMIT 2048
+#define SERIALIZED_HEADER_SIZE 58
 
 typedef struct { uint8_t flags; uint32_t depth; } Frame;
 typedef struct {
@@ -38,6 +39,8 @@ typedef struct {
     bool magic_name_active, option_pending, option_escape;
     bool command_backslash, command_cr;
     uint8_t help_state;
+    uint16_t opaque_rows;
+    bool opaque_cr;
 } Scanner;
 
 static bool horizontal(int32_t c) { return c == ' ' || c == '\t'; }
@@ -571,26 +574,35 @@ static bool identifier_prefix(Scanner *s, TSLexer *lexer) {
     s->help_prefix = true; s->cell_start = false; s->statement_start = false; s->rhs_ready = false;
     return finish(lexer, HELP_PREFIX_CHUNK, count);
 }
+static void opaque_character(Scanner *s, TSLexer *lexer, uint32_t *count) {
+    int32_t c = lexer->lookahead;
+    if (c == '\r' || (c == '\n' && !s->opaque_cr)) {
+        if (++s->opaque_rows == OPAQUE_ROW_LIMIT) s->opaque_rows = 0;
+    }
+    s->opaque_cr = c == '\r';
+    take(s, lexer, count);
+}
 static bool opaque_chunk(Scanner *s, TSLexer *lexer, const bool *valid) {
     uint32_t count = 0;
     while (!lexer->eof(lexer) && count < CHUNK_LIMIT) {
         if (s->line_start && lexer->lookahead == '#') {
             Scanner saved = *s; uint32_t probe = 0;
             lexer->mark_end(lexer);
-            take(s, lexer, &probe);
+            opaque_character(s, lexer, &probe);
             if (!count) lexer->mark_end(lexer);
-            while (horizontal(lexer->lookahead) && count + probe < CHUNK_LIMIT) take(s, lexer, &probe);
+            while (horizontal(lexer->lookahead) && count + probe < CHUNK_LIMIT) opaque_character(s, lexer, &probe);
             bool possible = horizontal(lexer->lookahead);
             if (lexer->lookahead == '%') {
                 if (count + probe == CHUNK_LIMIT) possible = true;
-                else { take(s, lexer, &probe); possible = lexer->lookahead == '%'; }
+                else { opaque_character(s, lexer, &probe); possible = lexer->lookahead == '%'; }
             }
             if (possible) {
                 *s = saved;
-                if (count) { lexer->result_symbol = CELL_BODY_CHUNK; return true; }
+                if (count) { s->opaque_rows = 0; lexer->result_symbol = CELL_BODY_CHUNK; return true; }
                 enum TokenType type = probe < CHUNK_LIMIT && lexer->lookahead == '%' ? MARKER_HASH : PREFIX_HASH;
                 if (!valid[type]) return false;
                 s->line_start = false; s->marker_prefix = true;
+                s->opaque_cr = false;
                 s->comment_line = true; s->statement_start = s->cell_start = s->rhs_ready = false;
                 lexer->result_symbol = type; return true;
             }
@@ -598,8 +610,17 @@ static bool opaque_chunk(Scanner *s, TSLexer *lexer, const bool *valid) {
             s->marker_prefix = false;
             continue;
         }
-        take(s, lexer, &count);
+        int32_t c = lexer->lookahead;
+        opaque_character(s, lexer, &count);
+        // Fixed codepoint boundaries alone drift after every insertion. A
+        // periodic physical-row anchor survives ordinary character edits,
+        // while retaining the hard token limit for arbitrarily long rows.
+        if (!s->opaque_rows && newline(c) && !(c == '\r' && lexer->lookahead == '\n')) break;
     }
+    // A complete physical-row boundary is a neutral phase. Besides improving
+    // scanner-state reuse, this retains the pre-existing fast path when a
+    // joined row makes the hash probe finish just before the next row.
+    if (s->line_start && !(s->opaque_cr && lexer->lookahead == '\n')) s->opaque_rows = 0;
     return finish(lexer, CELL_BODY_CHUNK, count);
 }
 bool tree_sitter_ipython_external_scanner_scan(void *payload, TSLexer *lexer, const bool *valid) {
@@ -682,6 +703,7 @@ bool tree_sitter_ipython_external_scanner_scan(void *payload, TSLexer *lexer, co
         s->statement_start = true; s->rhs_ready = false; s->comment_line = false; s->continued_line = false;
         s->marker_prefix = false; s->arguments_active = false; s->header_kind = HEADER_NONE;
         s->bracket_depth = 0; s->frames.size = 0; s->recent_length = 0; s->help_prefix = false; s->suite_colon = false;
+        s->opaque_rows = 0; s->opaque_cr = false;
         lexer->mark_end(lexer); lexer->result_symbol = CELL_HEADER_END; return true;
     }
     if (valid[CELL_BODY_CHUNK]) return opaque_chunk(s, lexer, valid);
@@ -751,7 +773,7 @@ unsigned tree_sitter_ipython_external_scanner_serialize(void *payload, char *buf
         (s->comment_line << 4) | (s->continued_line << 5) | (s->marker_prefix << 6) | (s->command_tail << 7) |
         (s->help_prefix << 8) | (s->suite_colon << 9) | (s->arguments_active << 10) | (s->conservative << 11) |
         (s->magic_name_active << 12) | (s->option_pending << 13) | (s->option_escape << 14) |
-        (s->command_backslash << 15) | (s->command_cr << 16);
+        (s->command_backslash << 15) | (s->command_cr << 16) | (s->opaque_cr << 17);
     unsigned offset = write_u32(buffer, 0, flags);
     buffer[offset++] = s->header_kind; buffer[offset++] = s->recent_length;
     buffer[offset++] = s->recent_length == 1 || s->recent_length == 2 ? s->recent[0] : 0;
@@ -761,6 +783,7 @@ unsigned tree_sitter_ipython_external_scanner_serialize(void *payload, char *buf
     memcpy(buffer + offset, s->option_text, sizeof(s->option_text)); offset += sizeof(s->option_text);
     offset = write_u32(buffer, offset, s->bracket_depth); offset = write_u32(buffer, offset, (uint32_t)s->previous);
     buffer[offset++] = s->help_prefix ? s->help_state : HELP_WORD;
+    memcpy(buffer + offset, &s->opaque_rows, 2); offset += 2;
     unsigned count_offset = offset; offset += 2; uint16_t count = 0;
     for (uint32_t i = 0; i < s->frames.size; i++) {
         Frame frame = s->frames.contents[i]; unsigned width = 1 + ((frame.flags & FIELD) ? 4 : 0);
@@ -779,6 +802,8 @@ static bool valid_serialized_state(const char *buffer, unsigned length) {
         (uint8_t)buffer[8] > MAGIC_CONFIG || (uint8_t)buffer[9] > MAGIC_PYTHON ||
         (uint8_t)buffer[10] > OPTION_VALUE || (uint8_t)buffer[12] >= 32 ||
         buffer[44] || (uint8_t)buffer[53] > HELP_AFTER_INDEX) return false;
+    uint16_t rows; memcpy(&rows, buffer + 54, 2);
+    if (rows >= OPAQUE_ROW_LIMIT) return false;
     uint16_t count; memcpy(&count, buffer + SERIALIZED_HEADER_SIZE - 2, 2);
     unsigned offset = SERIALIZED_HEADER_SIZE;
     for (uint16_t i = 0; i < count; ++i) {
@@ -799,6 +824,7 @@ void tree_sitter_ipython_external_scanner_deserialize(void *payload, const char 
     s->magic_kind = MAGIC_RAW; s->magic_phase = MAGIC_NONE; s->magic_name_active = s->option_pending = s->option_escape = false;
     s->option_mode = s->option_quote = s->option_length = 0; memset(s->option_text, 0, sizeof(s->option_text));
     s->command_backslash = s->command_cr = false; s->help_state = HELP_WORD;
+    s->opaque_rows = 0; s->opaque_cr = false;
     if (!length) return;
     if (!valid_serialized_state(buffer, length)) return;
     unsigned offset = 0; uint32_t flags = read_u32(buffer, &offset);
@@ -807,6 +833,7 @@ void tree_sitter_ipython_external_scanner_deserialize(void *payload, const char 
     s->help_prefix = flags & 256; s->suite_colon = flags & 512; s->arguments_active = flags & 1024; s->conservative = flags & 2048;
     s->magic_name_active = flags & 4096; s->option_pending = flags & 8192; s->option_escape = flags & 16384;
     s->command_backslash = flags & 32768; s->command_cr = flags & 65536;
+    s->opaque_cr = flags & 131072;
     s->header_kind = buffer[offset++]; s->recent_length = buffer[offset++];
     s->recent[0] = buffer[offset++]; s->recent[1] = buffer[offset++];
     s->magic_kind = buffer[offset++]; s->magic_phase = buffer[offset++]; s->option_mode = buffer[offset++];
@@ -814,6 +841,7 @@ void tree_sitter_ipython_external_scanner_deserialize(void *payload, const char 
     memcpy(s->option_text, buffer + offset, sizeof(s->option_text)); offset += sizeof(s->option_text);
     s->bracket_depth = read_u32(buffer, &offset); s->previous = (int32_t)read_u32(buffer, &offset);
     s->help_state = buffer[offset++];
+    memcpy(&s->opaque_rows, buffer + offset, 2); offset += 2;
     uint16_t count; memcpy(&count, buffer + offset, 2); offset += 2;
     for (uint16_t i = 0; i < count && offset < length; i++) {
         Frame frame = { .flags = (uint8_t)buffer[offset++] };

@@ -39,6 +39,10 @@ Line magic statements and expressions preserve the percent prefix, optional name
 
 Body chunks, commands, names, arguments, marker prefixes and titles consume at most 4096 Unicode codepoints per external token. Ordinary comment rows, Markdown headings and first words are resolved within multi-row body chunks; only marker and suffix-help candidates need separate prefix tokens. Long prefixes and suffix-help names continue through hidden tokens; no marker-length limit is imposed. The scanner stores quote, f-string, bracket, help-target, physical-line and logical-command continuation context, without seeking backwards through a long row. Hidden chunks do not create a public node for every line.
 
+Opaque bodies also bound a run of partial-row chunks to 2048 physical newlines. Finishing a complete row resets that budget. These stable row anchors let character insertions and deletions reuse the following chunks instead of shifting every token boundary to EOF. CRLF counts as one physical newline even when split across tokens; the 4096-codepoint limit still bounds a single long row.
+
+Adding or removing a physical newline changes the row phase and may replay the opaque body up to its next cell marker. Stable reuse therefore applies to ordinary character edits, rather than edits that change the number of rows or alter a reserved marker.
+
 The scaffold deliberately accepts ordinary malformed Python as a Python body. Native Python injections handle Python syntax and may recover around omitted IPython-only statements. The shared analysis projection in language-ipython keeps statement suites and RHS assignments valid for Python tooling without changing source or execution.
 
 ## Usage

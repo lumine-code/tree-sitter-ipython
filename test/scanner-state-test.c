@@ -39,6 +39,7 @@ static void scanner_roundtrip(void) {
         source->command_backslash = mask & 1; source->command_cr = mask & 2;
         source->help_prefix = mask & 4; source->help_state = (uint8_t)(mask % (HELP_AFTER_INDEX + 1));
         source->option_pending = mask & 8; source->option_escape = mask & 16;
+        source->opaque_rows = (uint16_t)(mask * 37); source->opaque_cr = mask & 16;
         source->bracket_depth = 123456; source->previous = 0x1f600;
         source->frames.size = 0;
         array_push(&source->frames, ((Frame){ .flags = QUOTE_SINGLE | TRIPLE | FORMAT }));
