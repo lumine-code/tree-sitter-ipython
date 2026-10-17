@@ -32,7 +32,8 @@
     "src",
     "test",
     "tree-sitter.json",
-    "binding.gyp"
+    "binding.gyp",
+    "THIRD_PARTY_NOTICES"
   ],
   "dependencies": {
     "node-addon-api": "^8.9.2",
