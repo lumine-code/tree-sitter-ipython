@@ -41,9 +41,9 @@
   },
   "devDependencies": {
     "@eslint/js": "^10.0.1",
-    "eslint": "^10.13.0",
+    "eslint": "^10.14.0",
     "eslint-config-prettier": "^10.1.8",
-    "globals": "^17.13.0",
+    "globals": "^17.14.0",
     "prettier": "^3.9.10",
     "tree-sitter": "^0.25.1",
     "tree-sitter-cli": "0.27.1",
@@ -70,5 +70,13 @@
     "lint": "eslint .",
     "test": "npm run lint && npm run check:format && npm run check:generated && npm run build:native && node --test bindings/node/*_test.js && tree-sitter test",
     "test:wasm": "npm run build:wasm && node --test bindings/wasm/*_test.js"
+  },
+  "overrides": {
+    "eslint@^10.14.0": {
+      "minimatch": "11.0.4"
+    },
+    "@eslint/config-array@0.23.5": {
+      "minimatch": "11.0.4"
+    }
   }
 }
